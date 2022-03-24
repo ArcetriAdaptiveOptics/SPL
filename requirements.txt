@@ -1,1 +1,5 @@
-
+pysilico
+plico_motor
+numpy
+astropy
+IPython

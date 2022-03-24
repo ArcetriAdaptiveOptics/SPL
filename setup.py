@@ -71,9 +71,13 @@ setup(name=NAME,
       author=AUTHOR,
       license=LICENSE,
       keywords=KEYWORDS,
-      packages=['
+      packages=['SPL'
                 ],
-      install_requires=[
+      install_requires=['pysilico',
+                        'plico_motor',
+                        "numpy",
+                        "astropy",
+                        "IPython",
                         ],
       include_package_data=True,
       test_suite='test',

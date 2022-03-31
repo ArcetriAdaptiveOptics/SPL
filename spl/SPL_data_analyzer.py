@@ -12,7 +12,8 @@ import logging
 from astropy.io import fits as pyfits
 from photutils import centroids
 #import matplotlib.pyplot as plt
-from SPL.ground import smooth_function as sf
+from spl.ground import smooth_function as sf
+from spl.conf import configuration as config
 
 
 class SplAnalyzer():
@@ -20,7 +21,7 @@ class SplAnalyzer():
     Class used to analyze images, whit SPL camera, at different wavelengths.
 
     HOW TO USE IT::
-        from m4.analyzers.SPL_data_analyzer import SplAnalyzer
+        from spl import SPL_data_analyzer import SplAnalyzer
         an = SplAnalyzer()
         piston, piston_smooth = an.analyzer(tt)
     '''
@@ -28,7 +29,7 @@ class SplAnalyzer():
     def __init__(self):
         """The constructor """
         self._logger = logging.getLogger('SPL_AN:')
-        self.tn_fringes = '20181026'
+        self.tn_fringes = config.TNFRINGES
         self._Qm = None
         self._QmSmooth = None
         self._matrix = None
@@ -37,15 +38,13 @@ class SplAnalyzer():
     @staticmethod
     def _storageFolder():
         """ Creates the path where to save measurement data"""
-        #return Path(__file__).parent/'data'
-        #return fold_name.SPL_ROOT_FOLDER
-        lift_path = '/home/labot/LIFT/SPL/data'
-        return lift_path
+        measurement_path = config.MEASUREMENT_ROOT_FOLDER
+        return measurement_path
     
     @staticmethod
     def _storageFringesFolder():
         ''' Path for fringes frames to use in analysis comparation'''
-        fringes_path = '....SPL/Fringes'
+        fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
         return fringes_path
 
     def analyzer(self, tt):
@@ -243,10 +242,10 @@ class SplAnalyzer():
         R_smooth = np.zeros(delta.shape[0]-1)
         for i in range(delta.shape[0]-1):
             # print('Processing',i)
-            R[i] = np.sum(Qm[:, :]*Qt[:, :, i]) / (np.sum(Qm[:, :]**2)**5
-                                                   * np.sum(Qt[:, :, i]**2)**5)
+            R[i] = np.sum(Qm[:, :]*Qt[:, :, i]) / (np.sum(Qm[:, :]**2)**.5
+                                                   * np.sum(Qt[:, :, i]**2)**.5)
             R_smooth[i] = np.sum(Qm_smooth[:, :]*Qt[:, :, i]) / \
-                        (np.sum(Qm_smooth[:, :]**2)**5 * np.sum(Qt[:, :, i]**2)**5)
+                        (np.sum(Qm_smooth[:, :]**2)**.5 * np.sum(Qt[:, :, i]**2)**.5)
 
 #        plt.figure(1)
 #        plt.plot(R)

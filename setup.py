@@ -77,7 +77,9 @@ setup(name=NAME,
                         'plico_motor',
                         "numpy",
                         "astropy",
-                        "IPython",
+                        "photutils",
+                        "scipy"
+                        "IPython"
                         ],
       include_package_data=True,
       test_suite='test',

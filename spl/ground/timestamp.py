@@ -1,7 +1,7 @@
 '''
 HOW TO USE IT::
 
-    from SPL.ground.timestamp import Timestamp
+    from spl.ground.timestamp import Timestamp
     now = Timestamp.now()
     today = Timestamp.today()
     or

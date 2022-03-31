@@ -2,4 +2,6 @@ pysilico
 plico_motor
 numpy
 astropy
+photutils
+scipy
 IPython

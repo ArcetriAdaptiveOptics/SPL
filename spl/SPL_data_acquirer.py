@@ -15,7 +15,7 @@ from astropy.io import fits as pyfits
 from photutils import centroids
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
-from SPL.ground import tracking_number_folder
+from spl.ground import tracking_number_folder
 
 class SplAcquirer():
     '''
@@ -41,10 +41,8 @@ class SplAcquirer():
     @staticmethod
     def _storageFolder(path=None):
         """ Creates the path where to save measurement data"""
-        #return Path(__file__).parent/'data'
-        #return fold_name.SPL_ROOT_FOLDER
-        lift_test_path = '/home/labot/LIFT/SPL/data'
-        return lift_test_path
+        measurement_path = config.MEASUREMENT_ROOT_FOLDER
+        return measurement_path
 
 
 # lambda_vector = np.arange(530,730,10)

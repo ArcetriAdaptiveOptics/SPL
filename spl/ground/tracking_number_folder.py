@@ -13,7 +13,7 @@ HOW TO USE IT::
 
 import os
 import fnmatch
-from SPL.ground.timestamp import Timestamp
+from spl.ground.timestamp import Timestamp
 
 def createFolderToStoreMeasurements(store_in_folder):
     """

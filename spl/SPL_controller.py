@@ -20,7 +20,7 @@ def define_camera():
     '''
     #far partire pysilico_server_2
     import pysilico
-    cam = pysilico.camera(IPCAMERA, PORTCAMERA)
+    cam = pysilico.camera(config.IPCAMERA, config.PORTCAMERA)
     return cam
 
 def define_filter():

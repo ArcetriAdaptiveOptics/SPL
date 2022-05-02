@@ -44,7 +44,8 @@ class SplAnalyzer():
     @staticmethod
     def _storageFringesFolder():
         ''' Path for fringes frames to use in analysis comparation'''
-        fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
+        fringes_path = '/Volumes/My Passport/M4/ProvaCodice/SPL/Fringes'
+        #fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
         return fringes_path
 
     def analyzer(self, tt):
@@ -211,12 +212,7 @@ class SplAnalyzer():
                            self.tn_fringes)
         dove = os.path.join(self._storageFringesFolder(),
                             self.tn_fringes)
-        dove_delta = os.path.join(dove, 'Differential_piston.fits')
-        hduList = pyfits.open(dove_delta)
-        delta = hduList[0].data
-        dove_lambda_synth = os.path.join(dove, 'Lambda.fits')
-        hduList = pyfits.open(dove_lambda_synth)
-        lambda_synth_from_data = hduList[0].data * 1e9
+        delta, lambda_synth_from_data = self._readDeltaAndLambdaFromFringesFolder(dove)
         lambda_synth = self._myLambaSynth(lambda_synth_from_data)
 
         idx = np.isin(lambda_synth, lambda_vector)
@@ -258,6 +254,15 @@ class SplAnalyzer():
         piston = delta[idp]
         piston_smooth = delta[idp_smooth]
         return piston, piston_smooth
+    
+    def _readDeltaAndLambdaFromFringesFolder(self, dove):
+        dove_delta = os.path.join(dove, 'Differential_piston.fits')
+        hduList = pyfits.open(dove_delta)
+        delta = hduList[0].data
+        dove_lambda_synth = os.path.join(dove, 'Lambda.fits')
+        hduList = pyfits.open(dove_lambda_synth)
+        lambda_synth_from_data = hduList[0].data * 1e9
+        return delta, lambda_synth_from_data
 
     def _myLambaSynth(self, lambda_synth_from_data):
         ''' Transforms its values into integers

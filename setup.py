@@ -4,7 +4,7 @@ from shutil import rmtree
 
 from setuptools import setup, Command
 
-NAME = 'SPL'
+NAME = 'spl'
 DESCRIPTION = 'Python code for SPL acquisition and analysis'
 URL = 'https://github.com/ArcetriAdaptiveOptics/SPL'
 EMAIL = 'chiara.selmi@inaf.it'
@@ -71,7 +71,7 @@ setup(name=NAME,
       author=AUTHOR,
       license=LICENSE,
       keywords=KEYWORDS,
-      packages=['SPL'
+      packages=['spl'
                 ],
       install_requires=['pysilico',
                         'plico_motor',
@@ -79,7 +79,6 @@ setup(name=NAME,
                         "astropy",
                         "photutils",
                         "scipy"
-                        "IPython"
                         ],
       include_package_data=True,
       test_suite='test',

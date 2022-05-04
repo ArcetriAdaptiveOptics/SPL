@@ -44,8 +44,7 @@ class SplAnalyzer():
     @staticmethod
     def _storageFringesFolder():
         ''' Path for fringes frames to use in analysis comparation'''
-        fringes_path = '/Volumes/My Passport/M4/ProvaCodice/SPL/Fringes'
-        #fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
+        fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
         return fringes_path
 
     def analyzer(self, tt):

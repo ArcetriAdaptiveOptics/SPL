@@ -8,6 +8,7 @@ import configparser
 config = configparser.ConfigParser()
 config.read(os.path.join(os.path.dirname(__file__), 'SPL.conf'))
 EXPTIME = np.float(config['spl']['exptime'])
+NUMFRAMES = np.int(config['spl']['numframes'])
 LAMBDAMIN = np.int(config['spl']['lambda_min'])
 LAMBDAMAX = np.int(config['spl']['lambda_max'])
 

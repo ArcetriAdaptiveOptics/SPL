@@ -16,6 +16,8 @@ from photutils import centroids
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
 from spl.ground import tracking_number_folder
+from spl.conf import configuration as config
+
 
 class SplAcquirer():
     '''

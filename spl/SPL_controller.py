@@ -31,7 +31,7 @@ def define_filter():
     filter = motor(config.IPFILTRO, config.PORTFILTRO, axis=1)
     return filter
 
-def SPL_measurement_and_analysis(camera, filter):
+def SPL_measurement_and_analysis(camera=None, filter=None):
     '''Function for SPL data acquisition and analysis
 
     Parameters
@@ -41,6 +41,11 @@ def SPL_measurement_and_analysis(camera, filter):
     filter: object
         filter object created with the command spl.define_filter
     '''
+    if camera is None:
+        camera = define_camera()
+    if filter is None:
+        filter = define_filter()
+
     meas = SplAcquirer(filter, camera)
     lambda_vector = np.arange(config.LAMBDAMIN, config.LAMBDAMAX, 10)
     tt = meas.acquire(lambda_vector, config.EXPTIME, config.NUMFRAMES, mask=None)

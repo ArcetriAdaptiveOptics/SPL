@@ -71,7 +71,7 @@ class SplAnalyzer():
         hduList = pyfits.open(lambda_path)
         lambda_vector = hduList[0].data
 
-        cube, cube_normalized = self._readCameraFrames(tt)
+        cube, cube_normalized = self.readMeasurement(tt)
         matrix, matrix_smooth = self.matrix_calc(lambda_vector, cube, cube_normalized)
         self._saveMatrix(matrix, tt)
         piston, piston_smooth = self._templateComparison(matrix,
@@ -147,7 +147,7 @@ class SplAnalyzer():
         matrix = hduList[0].data
         return matrix
 
-    def _readCameraFrames(self, tt):
+    def readMeasurement(self, tt):
         ''' Read images in a specific tracking number and return the cube
         args:
             tt = tracking number

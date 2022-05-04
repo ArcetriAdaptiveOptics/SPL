@@ -64,3 +64,16 @@ def get_fringe_matrix(tn, display=False):
         plt.show()
     return mat
 
+def readMeasurement(tn):
+    ''' Read images in a specific tracking number and return the cube
+    args:
+        tt = tracking number
+    returns:
+        cube = [pixels, pixels, n_frames=lambda]
+        cube_normalized = creating with normalized images,
+                          [pixels, pixels, n_frames=lambda]
+    '''
+    an = SplAnalyzer()
+    return an.readMeasurement(tn)
+
+

@@ -49,8 +49,18 @@ def SPL_measurement_and_analysis(camera=None, filter=None):
     meas = SplAcquirer(filter, camera)
     lambda_vector = np.arange(config.LAMBDAMIN, config.LAMBDAMAX, 10)
     tt = meas.acquire(lambda_vector, config.EXPTIME, config.NUMFRAMES, mask=None)
-    print(tt)
     an = SplAnalyzer()
     piston, piston_smooth = an.analyzer(tt)
     print(piston, piston_smooth)
     return tt, piston
+
+def get_fringe_matrix(tn, display=False):
+    an = SplAnalyzer()
+    mat = an.get_matrix(tn)
+    if display:
+        import matplotlib.pyplot as plt
+        plt.imshow(mat)
+        plt.colorbar()
+        plt.show()
+    return mat
+

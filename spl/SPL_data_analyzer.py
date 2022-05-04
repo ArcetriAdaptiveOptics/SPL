@@ -141,7 +141,7 @@ class SplAnalyzer():
             matrix of fringes
         '''
         destination_file_path = self._storageFolder()
-        fits_file_name = os.path.join(destination_file_path, 'fringe_result.fits', tn)
+        fits_file_name = os.path.join(destination_file_path, tn, 'fringe_result.fits')
         
         hduList = pyfits.open(fits_file_name)
         matrix = hduList[0].data

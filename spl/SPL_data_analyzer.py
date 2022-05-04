@@ -3,6 +3,7 @@ Authors
   - G. Pariani, R.Briguglio: written in 2016
   - C. Selmi: ported to Python in 2020
   - A. Puglisi and C. Selmi: python code debugging in 2021
+  - M. Xompero and N. Azzaroli: modified SplAnalyzer from **5 to **.5
 '''
 
 import os
@@ -164,6 +165,11 @@ class SplAnalyzer():
         path_list.sort()
         cube = []
         cube_normalized = []
+
+        #explore the option of correlating sqrt of images with sqrt of template 
+        #because the psf shape is changing with shape  (because energy changes)
+        #and here we simply scale from the max
+
         for i in range(len(path_list)):
             #print('Reading ',path_list[i])
             hduList = pyfits.open(path_list[i])

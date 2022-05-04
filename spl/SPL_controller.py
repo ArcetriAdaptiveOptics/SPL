@@ -43,7 +43,7 @@ def SPL_measurement_and_analysis(camera, filter):
     '''
     meas = SplAcquirer(filter, camera)
     lambda_vector = np.arange(config.LAMBDAMIN, config.LAMBDAMAX, 10)
-    tt = meas.acquire(lambda_vector, config.EXPTIME, mask=None)
+    tt = meas.acquire(lambda_vector, config.EXPTIME, config.NUMFRAMES, mask=None)
     print(tt)
     an = SplAnalyzer()
     piston, piston_smooth = an.analyzer(tt)

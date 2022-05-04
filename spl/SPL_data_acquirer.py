@@ -46,7 +46,7 @@ class SplAcquirer():
 
 
 # lambda_vector = np.arange(530,730,10)
-    def acquire(self, lambda_vector, exptime=0.7, mask=None):
+    def acquire(self, lambda_vector, exptime, numframes=1, mask=None):
         '''
         Parameters
         ----------
@@ -89,6 +89,7 @@ class SplAcquirer():
 
         expgain = np.ones(lambda_vector.shape[0]) * 0.5
         expgain[np.where(lambda_vector < 550)] = 1 #8
+        expgain[np.where(lambda_vector < 530)] = 2 #8
         expgain[np.where(lambda_vector > 650)] = 1 #3
         expgain[np.where(lambda_vector > 700)] = 1.5 #8
 
@@ -102,7 +103,8 @@ class SplAcquirer():
             aa = self._camera.exposureTime()
             print('with exposure time of %d [ms]' %aa)
             #time.sleep(3 * ExposureTimeAbs / 1e6)
-            image = self._camera.getFutureFrames(1).toNumpyArray()
+            image = np.mean(self._camera.getFutureFrames(numframes).toNumpyArray(), 2)
+
             image = np.ma.masked_array(image, mask)
             #plot(image)
             #plt.imshow(image)
@@ -116,6 +118,7 @@ class SplAcquirer():
             file_name = 'image_%dnm.fits' %wl
             self._saveCameraFrame(file_name, crop)
 
+        self._filter.move_to(600)
         print('Saved tracking number:', tt)
         return tt
 

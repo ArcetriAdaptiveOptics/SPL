@@ -9,6 +9,8 @@ import os
 import logging
 import cv2
 import numpy as np
+import time
+from datetime import datetime
 from pathlib import Path
 import scipy
 import scipy.ndimage as scin
@@ -46,22 +48,58 @@ class SplAcquirer():
         """ Creates the path where to save measurement data"""
         measurement_path = config.MEASUREMENT_ROOT_FOLDER
         return measurement_path
-
-    def acquire(self, lambda_vector, exptime, numframes=2, mask=None):
+     
+    def acquire(self, lambda_vector, exptime, numframes=2, mask=None, display_reference=False):
         """
-        Acquires images at different wavelengths and saves them as FITS cubes.
+        Acquires images at different wavelengths, subtracts dark frame, 
+        and saves them as FITS cubes.
+        
+        Args:
+            lambda_vector: Array of wavelengths to acquire
+            exptime: Exposure time in milliseconds
+            numframes: Number of frames to average (default: 2)
+            mask: Optional mask to apply
+            display_reference: If True, displays the reference image after dark subtraction (default: False)
         """
+        # Capture dark frame (with lamp off)
+        dark_frame = self._capture_dark_frame(exptime)
+        # Save the dark frame
+        #self._save_dark_frame(dark_frame)
+        
+        # Now subtract the dark frame from subsequent frames during acquisition
+        self._dark_frame = dark_frame  # Store the dark frame for later use
 
         self._dove, tt = tracking_number_folder.createFolderToStoreMeasurements(self._storageFolder())
         fits_file_name = os.path.join(self._dove, 'lambda_vector.fits')
         pyfits.writeto(fits_file_name, lambda_vector)
 
         # Step 1: Capture reference frame
-        reference_image = self._captureReferenceFrame(700, exptime*2)
+        reference_image = self._captureReferenceFrame(700, exptime)
+        
+        # Ensure reference image is float32 and 2D
+        if reference_image.ndim == 3:
+            reference_image = np.mean(reference_image, axis=2)
+        reference_image = reference_image.astype(np.float32)
+        #print(f"Reference image shape: {reference_image.shape}, dtype: {reference_image.dtype}, min: {np.min(reference_image)}, max: {np.max(reference_image)}")
+        
+        # Subtract the dark frame from the reference image
+        reference_image -= self._dark_frame
+        #print(f"After dark subtraction - min: {np.min(reference_image)}, max: {np.max(reference_image)}")
+        
+        # Clip negative values to zero
+        reference_image = np.clip(reference_image, 0, None)
+        
+        # Display reference image if requested
+        if display_reference:
+            plt.figure(figsize=(10, 8))
+            plt.imshow(reference_image, cmap='gray')
+            plt.colorbar(label='Intensity')
+            plt.title('Reference Image (after dark subtraction)')
+            plt.show()
         
         # Step 1.5: Slice the reference image and find spots in each subframe
         subframe_positions = self._sliceAndFindSpotPositions(reference_image, n=3, m=2)  # Example: 3x2 subframes
-        print(f"Looking for spots in subframes: {len(subframe_positions)} positions detected.")
+        print(f"Looking for spots in {len(subframe_positions)} positions.")
         
         if not subframe_positions:
             raise ValueError("No bright spots detected in any subframe!")
@@ -77,7 +115,7 @@ class SplAcquirer():
                 full_cy = j * subframe_height + cy_subframe
                 positions.append((full_cx, full_cy))
         
-        print(f"Total found spots: {len(positions)}")
+        print(f"Total subframes with spots: {len(positions)}")
 
         # Step 3: Scan through wavelengths and preprocess data (looping over positions)
         frame_cube = []  # This will hold the final 4D cube (npix, mpix, nwaves, npositions)
@@ -85,6 +123,8 @@ class SplAcquirer():
             print(f"Acquiring image at {wl} nm...")
             print(f'Exposure time: {exptime} ms')
             self._filter.move_to(wl)
+            if wl == lambda_vector[0]:
+                time.sleep(10)
             self._camera.setExposureTime(exptime)
             image = self._camera.getFutureFrames(numframes).toNumpyArray()
 
@@ -94,6 +134,12 @@ class SplAcquirer():
             else:
                 image = np.mean(image, axis=0)
 
+            # Subtract the dark frame from the acquired image
+            image -= self._dark_frame
+
+            # Clip negative values to zero
+            image = np.clip(image, 0, None)
+
             # Step 4: Pre-process each frame for all detected positions
             processed_wavelength_frames = []  # Holds preprocessed images for each position at this wavelength
             for idx, pos in enumerate(positions):
@@ -101,7 +147,7 @@ class SplAcquirer():
                 #print(f"Processing spot at (cx={cx}, cy={cy}) at {wl} nm")
                 crop = self._preProcessing(image, cy, cx)  # Preprocess image around the spot
                 file_name = 'image_%dnm_pos%02d.fits' % (wl, idx)
-                self._saveCameraFrame(file_name, crop)
+                self._saveCameraFrame(file_name, crop, wavelength=wl)
                 processed_wavelength_frames.append(crop)
             
             # Append the processed frames for the current wavelength (shape: npix, mpix, npositions)
@@ -158,6 +204,7 @@ class SplAcquirer():
         print(f'Acquiring reference image at {wavelength} nm...')
         print(f'Exposure time: {exptime} ms')
         self._filter.move_to(wavelength)
+        time.sleep(10)
         self._camera.setExposureTime(exptime)
         image = self._camera.getFutureFrames(1).toNumpyArray()
         # plt.imshow(image, cmap='gray')
@@ -179,7 +226,7 @@ class SplAcquirer():
         pyfits.writeto(fits_file_name, frame_cube, overwrite=True)
         pyfits.append(fits_file_name, lambda_vector)
 
-    def _saveCameraFrame(self, file_name, frame):
+    def _saveCameraFrame(self, file_name, frame, wavelength=None):
         ''' Save camera frames in SPL/TrackingNumber
         '''
         fits_file_name = os.path.join(self._dove, file_name)
@@ -190,7 +237,12 @@ class SplAcquirer():
             data = frame
             mask = None
 
-        pyfits.writeto(fits_file_name, data, overwrite=True)
+        # Create header with wavelength information if provided
+        header = pyfits.Header()
+        if wavelength is not None:
+            header['WAVELEN'] = (wavelength, 'Wavelength in nanometers')
+
+        pyfits.writeto(fits_file_name, data, header=header, overwrite=True)
         if mask is not None:
             pyfits.append(fits_file_name, mask)
 
@@ -233,8 +285,11 @@ class SplAcquirer():
         if mask is not None:
             thresh[mask] = 0  # Ensure masked areas are ignored
         
+        # Convert thresh to uint8 for findContours
+        thresh_uint8 = thresh.astype(np.uint8)
+        
         # Find contours of the bright regions
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(thresh_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Get the centroid of each bright spot
         bright_spots = []
@@ -289,6 +344,41 @@ class SplAcquirer():
         # plt.imshow(crop, cmap='gray')
         # plt.show()
         return crop
+    
+    def _capture_dark_frame(self, exptime):
+        """
+        Capture a dark frame with the lamp off.
+        
+        Args:
+            exptime: Exposure time for the dark frame.
+            
+        Returns:
+            dark_frame: The captured dark frame image.
+        """
+        print("Turning off the filter to capture a dark frame...")
+        self._filter.set_bandwidth_mode(1)  
+        time.sleep(5)
+        self._camera.setExposureTime(exptime)
+        dark_frame = self._camera.getFutureFrames(1).toNumpyArray()
+        self._filter.set_bandwidth_mode(2)
+        
+        # Convert to a 2D array and ensure float32 type
+        if dark_frame.ndim == 3:
+            dark_frame = np.mean(dark_frame, axis=2)
+        dark_frame = dark_frame.astype(np.float32)
+        print(f"Dark frame shape: {dark_frame.shape}, dtype: {dark_frame.dtype}, min: {np.min(dark_frame)}, max: {np.max(dark_frame)}")
+        return dark_frame
+
+    def _save_dark_frame(self, dark_frame):
+        """
+        Save the captured dark frame with a timestamped filename.
+        
+        Args:
+            dark_frame: The dark frame to save.
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dark_frame_filename = os.path.join(self._dove, f"dark_{timestamp}.fits")
+        print(f"Saving dark frame as {dark_frame_filename}...")
         
 #     def _saveInfo(self, file_name):
 #         fits_file_name = os.path.join(self._dove, file_name)

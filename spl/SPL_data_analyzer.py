@@ -54,7 +54,7 @@ class SplAnalyzer():
         fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
         return fringes_path
     
-    def analyzer(self, tt):
+    def analyzer(self, tt, use_processed=False):
         '''
         Analyze measurement data and compare it with synthetic data.
 
@@ -62,12 +62,12 @@ class SplAnalyzer():
         ----------
         tt: string
             tracking number of the measurement data
+        use_processed: bool
+            whether to use processed FITS files
         Returns
         -------
-        piston: int
-                piston value
-        piston_smooth: int
-                piston value after smoothing data
+        pistons: list of tuples
+            list of (piston, piston_smooth) for each position
         '''
         dove = os.path.join(self._storageFolder(), tt)
 
@@ -86,7 +86,11 @@ class SplAnalyzer():
         
         # For each position process the images
         for position in positions:
-            cube, cube_normalized = self._readMeasurement(position, tt)        
+            cube, cube_normalized = self._readMeasurement(position, tt, use_processed)
+            if cube is None: # Handle case where no files were found/read
+                self._logger.warning(f"No valid data cube read for position {position}. Skipping analysis for this position.")
+                pistons.append((np.nan, np.nan)) # Or some other indicator
+                continue
             
             # Compute matrix and smoothed matrix
             matrix, matrix_smooth = self.matrix_calc(lambda_vector, cube, cube_normalized)
@@ -120,12 +124,13 @@ class SplAnalyzer():
         
         return sorted(wavelengths), sorted(positions)
 
-    def _readMeasurement(self, position, tt):
+    def _readMeasurement(self, position, tt, use_processed):
         """ Read images from a specific tracking number and return the cube.
 
         Args:
             position (int): Position index (e.g., 00, 01, etc.)
             tt (str): Tracking number.
+            use_processed (bool): Whether to use processed FITS files
 
         Returns:
             tuple: 
@@ -134,12 +139,20 @@ class SplAnalyzer():
         """
         dove = os.path.join(self._storageFolder(), tt)
         
-        # Get sorted list of FITS files matching the specific position
-        path_list = sorted(glob.iglob(os.path.join(dove, f'image_*nm_pos{position:02d}.fits')))
+        # Choose the file pattern based on the use_processed flag
+        if use_processed:
+            file_pattern = f'image_*nm_pos{position:02d}_proc.fits'
+            self._logger.info(f"Reading PROCESSED files for position {position:02d} with pattern: {file_pattern}")
+        else:
+            file_pattern = f'image_*nm_pos{position:02d}.fits'
+            self._logger.info(f"Reading RAW files for position {position:02d} with pattern: {file_pattern}")
+            
+        # Get sorted list of FITS files matching the specific position and pattern
+        path_list = sorted(glob.iglob(os.path.join(dove, file_pattern)))
         #print(path_list)
 
         if not path_list:
-            print(f"Error: No FITS files found for position {position:02d} in {dove}")
+            self._logger.error(f"Error: No FITS files found for position {position:02d} in {dove} using pattern '{file_pattern}'")
             return None, None  # Handle case with no images
 
         cube = []
@@ -156,6 +169,9 @@ class SplAnalyzer():
             if image is None:
                 print(f"Warning: No data in {path}")
                 continue  # Skip empty images
+
+            # Clip negative values to zero after reading
+            image = np.clip(image, 0, None)
 
             image_sum = np.sum(image)
             image_normalized = image / image_sum if image_sum != 0 else image  # Prevent division by zero
@@ -180,7 +196,7 @@ class SplAnalyzer():
             position (int): Position.
         """
         destination_file_path = self._storageFolder()
-        fits_file_name = os.path.join(destination_file_path, tt, f'fringe_result_{wavelength}nm_pos{position:02d}.fits')
+        fits_file_name = os.path.join(destination_file_path, tt, f'fringe_result_pos{position:02d}.fits')
         pyfits.writeto(fits_file_name, matrix, overwrite=True)
 
     def matrix_calc(self, lambda_vector, cube, cube_normalized):
@@ -251,7 +267,7 @@ class SplAnalyzer():
         #print('Baricenter = ', cx, cy)
         baricenterCoord = [int(round(cy)), int(round(cx))]
         pick = [baricenterCoord[0]-25, baricenterCoord[0]+25,
-                baricenterCoord[1]-75, baricenterCoord[1]+75]
+                baricenterCoord[1]-50, baricenterCoord[1]+50]
         return pick
 
     def _templateComparison(self, matrix, matrix_smooth, lambda_vector):
@@ -275,32 +291,37 @@ class SplAnalyzer():
                            self.tn_fringes)
         dove = os.path.join(self._storageFringesFolder(),
                             self.tn_fringes)
-        #print('Restoring synth data from: ',dove)
         delta, lambda_synth_from_data = self._readDeltaAndLambdaFromFringesFolder(dove)
         lambda_synth = self._myLambaSynth(lambda_synth_from_data)
 
-        idx = np.isin(lambda_synth, lambda_vector)
-        Qm = matrix - np.mean(matrix)               # Qm are the synthetic fringes
-        Qm_smooth = matrix_smooth - np.mean(matrix_smooth)
-        self._QmSmooth = Qm_smooth
+        # Find common wavelengths between measured and synthetic data
+        common_wavelengths = np.intersect1d(lambda_vector, lambda_synth)
+        if len(common_wavelengths) == 0:
+            raise ValueError("No common wavelengths found between measured and synthetic data")
 
-        #creare la matrice di Giorgio della giusta dimensione
+        # Get indices for common wavelengths
+        idx_measured = np.isin(lambda_vector, common_wavelengths)
+        idx_synthetic = np.isin(lambda_synth, common_wavelengths)
+
+        # Select only common wavelengths
+        Qm = matrix[:, idx_measured] - np.mean(matrix[:, idx_measured])
+        Qm_smooth = matrix_smooth[:, idx_measured] - np.mean(matrix_smooth[:, idx_measured])
+        self._QmSmooth = Qm_smooth
+        plt.plot(Qm); plt.show()
+
+        # Create synthetic fringe matrix with common wavelengths
         F = []
         for i in range(1, delta.shape[0]):
             file_name = os.path.join(dove, 'Fringe_%05d.fits' %i)
-            #print('Reading ',file_name)
             hduList = pyfits.open(file_name)
             fringe = hduList[0].data
-            fringe_selected = fringe[:, idx]
+            fringe_selected = fringe[:, idx_synthetic]
             F.append(fringe_selected)
         F = np.dstack(F)
-        Qt = F - np.mean(F)                         # Qt are the measured fringes
+        Qt = F - np.mean(F)
         
         # Check and match matrix shapes
-        if Qt.shape[0] != Qm.shape[0] or Qt.shape[0] != Qm_smooth.shape[0]:
-            #print(f"Shape mismatch - Qt: {Qt.shape}, Qm: {Qm.shape}, Qm_smooth: {Qm_smooth.shape}")
-            #print("Interpolating matrices to match Qt shape...")
-            
+        if Qt.shape[0] != Qm.shape[0]:
             # Create interpolation function for each wavelength
             x_original = np.linspace(0, 1, Qm.shape[0])
             x_new = np.linspace(0, 1, Qt.shape[0])
@@ -320,7 +341,6 @@ class SplAnalyzer():
             
             Qm = Qm_interp
             Qm_smooth = Qm_smooth_interp
-            #print(f"Interpolation complete. New shapes - Qm: {Qm.shape}, Qm_smooth: {Qm_smooth.shape}")
 
         self._Qm = Qm
         self._Qt = Qt
@@ -333,13 +353,8 @@ class SplAnalyzer():
             R_smooth[i] = np.sum(Qm_smooth[:, :]*Qt[:, :, i]) / \
                         (np.sum(Qm_smooth[:, :]**2)**.5 * np.sum(Qt[:, :, i]**2)**.5)
 
-        #plt.plot(R); plt.title('R')
-        #plt.show()
-
         idp = np.where(R == max(R))
         idp_smooth = np.where(R_smooth == max(R_smooth))
-        #plt.imshow(F[:, :, idp[0][0]].T); plt.title('Synth fringes')
-        #plt.show()
         
         piston = delta[idp]
         piston_smooth = delta[idp_smooth]

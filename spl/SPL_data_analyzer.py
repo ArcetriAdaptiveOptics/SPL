@@ -100,7 +100,7 @@ class SplAnalyzer():
 
             # Compare with synthetic data to get piston and piston_smooth
             print('*** Position = ', position)
-            piston, piston_smooth = self._templateComparison(matrix, matrix_smooth, lambda_vector)
+            piston, piston_smooth = self._templateComparison(matrix, matrix_smooth, lambda_vector, tt, position)
 
             # Save the piston result
             self._savePistonResult(tt, piston, piston_smooth, position)
@@ -270,7 +270,7 @@ class SplAnalyzer():
                 baricenterCoord[1]-50, baricenterCoord[1]+50]
         return pick
 
-    def _templateComparison(self, matrix, matrix_smooth, lambda_vector):
+    def _templateComparison(self, matrix, matrix_smooth, lambda_vector, tt, position):
         '''
         Compare the matrix obtained from the measurements with
         the one recreated with the synthetic data in tn_fringes.
@@ -282,6 +282,10 @@ class SplAnalyzer():
                         measured matrix smooth
         lambda_vector: numpy array
                         vector of wavelengths (between 400/700 nm)
+        tt: string
+            tracking number (for saving Qm)
+        position: int
+            position index (for saving Qm)
         Returns
         -------
         piston: int
@@ -307,7 +311,7 @@ class SplAnalyzer():
         Qm = matrix[:, idx_measured] - np.mean(matrix[:, idx_measured])
         Qm_smooth = matrix_smooth[:, idx_measured] - np.mean(matrix_smooth[:, idx_measured])
         self._QmSmooth = Qm_smooth
-        plt.plot(Qm); plt.show()
+        # plt.plot(Qm); plt.show() # Original line
 
         # Create synthetic fringe matrix with common wavelengths
         F = []
@@ -344,6 +348,61 @@ class SplAnalyzer():
 
         self._Qm = Qm
         self._Qt = Qt
+
+        # --- Plot and Save Qm matrix (imshow) --- 
+        try:
+            plt.figure(figsize=(8, 6))
+            # Use imshow to display the 2D Qm matrix
+            im = plt.imshow(Qm, aspect='auto', cmap='viridis', 
+                            interpolation='nearest', origin='lower',
+                            extent=[common_wavelengths.min(), common_wavelengths.max(), 0, Qm.shape[0]])
+            plt.colorbar(im, label='Mean-Subtracted Normalized Intensity')
+            plt.xlabel("Wavelength (nm)")
+            plt.ylabel("Pixel Row Index in Crop")
+            plt.title(f"Position {position:02d}: Measured Fringe Matrix (Qm)")
+            
+            qm_plot_filename = os.path.join(self._storageFolder(), tt, f'Qm_plot_pos{position:02d}.png')
+            plt.savefig(qm_plot_filename)
+            plt.close() # Close plot to prevent display
+            self._logger.info(f"Saved Qm plot for position {position:02d} to {qm_plot_filename}")
+        except Exception as e:
+             self._logger.error(f"Could not plot or save Qm matrix for position {position:02d}: {e}")
+        # --- End Plot and Save Qm (imshow) ---
+
+        # --- Plot and Save Qm matrix (1D Profiles) --- 
+        try:
+            plt.figure(figsize=(10, 6))
+            num_pixels, num_waves = Qm.shape
+            # Create a sequence of colors from a colormap
+            colors = plt.cm.viridis(np.linspace(0, 1, num_waves))
+            
+            for j in range(num_waves):
+                plt.plot(range(num_pixels), Qm[:, j], color=colors[j], linewidth=0.8) # Plot each column (wavelength)
+                
+            plt.xlabel("Pixel Row Index in Crop")
+            plt.ylabel("Mean-Subtracted Normalized Intensity")
+            plt.title(f"Position {position:02d}: Qm Profiles per Wavelength")
+            plt.grid(True, linestyle=':', alpha=0.6)
+            # Optional: Add a color bar indicating wavelength? Maybe too complex without legend.
+            
+            qm_profiles_filename = os.path.join(self._storageFolder(), tt, f'Qm_profiles_pos{position:02d}.png')
+            plt.savefig(qm_profiles_filename)
+            plt.close() # Close plot to prevent display
+            self._logger.info(f"Saved Qm profiles plot for position {position:02d} to {qm_profiles_filename}")
+        except Exception as e:
+             self._logger.error(f"Could not plot or save Qm profiles for position {position:02d}: {e}")
+        # --- End Plot and Save Qm (1D Profiles) ---
+
+        # --- Save Qm matrix data --- 
+        try:
+            qm_filename = os.path.join(self._storageFolder(), tt, f'Qm_matrix_pos{position:02d}.fits')
+            pyfits.writeto(qm_filename, Qm, overwrite=True)
+            self._logger.info(f"Saved Qm matrix data for position {position:02d} to {qm_filename}")
+            # Optionally save common_wavelengths if needed with Qm data
+            # pyfits.append(qm_filename, common_wavelengths) 
+        except Exception as e:
+             self._logger.error(f"Could not save Qm matrix data for position {position:02d}: {e}")
+        # --- End Save Qm Data --- 
 
         R = np.zeros(delta.shape[0]-1)
         R_smooth = np.zeros(delta.shape[0]-1)

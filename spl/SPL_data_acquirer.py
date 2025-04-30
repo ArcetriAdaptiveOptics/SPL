@@ -42,6 +42,8 @@ class SplAcquirer():
         self._camera = camera_obj
         self._pix2um = 4.5 # pixel to um conversion for AVT GT5120
         self._exptime = None
+        self._n_rows = config.N_ROWS
+        self._m_cols = config.M_COLS
 
     @staticmethod
     def _storageFolder(path=None):
@@ -91,31 +93,74 @@ class SplAcquirer():
         
         # Display reference image if requested
         if display_reference:
-            plt.figure(figsize=(10, 8))
-            plt.imshow(reference_image, cmap='gray')
-            plt.colorbar(label='Intensity')
-            plt.title('Reference Image (after dark subtraction)')
-            plt.show()
+            try:
+                plt.figure(figsize=(10, 8))
+                plt.imshow(reference_image, cmap='gray', origin='lower')
+                plt.colorbar(label='Intensity')
+                
+                # --- Add Slice Boundary Visualization ---
+                height, width = reference_image.shape
+                n_rows_slice = self._n_rows
+                n_cols_slice = self._m_cols
+                row_size = height // n_rows_slice
+                col_size = width // n_cols_slice
+
+                # Draw horizontal lines
+                for i in range(1, n_rows_slice):
+                    plt.axhline(y=i * row_size, color='r', linestyle='--', alpha=0.7)
+                # Draw vertical lines
+                for j in range(1, n_cols_slice):
+                    plt.axvline(x=j * col_size, color='r', linestyle='--', alpha=0.7)
+                # --- End Slice Boundary Visualization ---
+
+                plt.title(f'Reference Image (Dark Subtracted) with {n_rows_slice}x{n_cols_slice} Slice Boundaries')
+                plt.xlabel("X pixel")
+                plt.ylabel("Y pixel")
+                plt.show()
+            except Exception as e:
+                self._logger.warning(f"Could not display reference image with slice boundaries: {e}")
         
         # Step 1.5: Slice the reference image and find spots in each subframe
-        subframe_positions = self._sliceAndFindSpotPositions(reference_image, n=3, m=2)  # Example: 3x2 subframes
-        print(f"Looking for spots in {len(subframe_positions)} positions.")
+        subframe_positions = self._sliceAndFindSpotPositions(reference_image, n=self._n_rows, m=self._m_cols)  
+        print(f"Looking for spots in {len(subframe_positions)} subframes.")
         
-        if not subframe_positions:
-            raise ValueError("No bright spots detected in any subframe!")
+        # Check if any spots were found in any subframe
+        if not any(subframe_positions):
+             # Raise error earlier if no spots are found anywhere
+             raise ValueError("No bright spots detected in ANY subframe!")
         
         # Step 2: Combine spot positions from subframes and convert to full frame coordinates
         positions = []
-        subframe_height, subframe_width = reference_image.shape[0] // 3, reference_image.shape[1] // 2  # Assuming 3x2 subframes
+        subframe_height = reference_image.shape[0] // 3
+        subframe_width = reference_image.shape[1] // 2
+        n_cols_slice = 2 # Number of columns used in slicing
         
-        for i, subframe in enumerate(subframe_positions):
-            for j, (cx_subframe, cy_subframe) in enumerate(subframe):
-                # Convert subframe coordinates to full frame coordinates
-                full_cx = i * subframe_width + cx_subframe
-                full_cy = j * subframe_height + cy_subframe
-                positions.append((full_cx, full_cy))
+        # Iterate through the flattened list of spot lists (one per subframe)
+        for k, spots_in_subframe in enumerate(subframe_positions):
+            if not spots_in_subframe:
+                # Optional: Log if a subframe is empty
+                # self._logger.debug(f"No spots found in subframe index {k}")
+                continue # Skip this subframe if no spots were found
+                
+            # Calculate the row and column index of this subframe
+            row_idx = k // n_cols_slice
+            col_idx = k % n_cols_slice
+            
+            # Iterate through spots found WITHIN this subframe
+            for (cx_subframe, cy_subframe) in spots_in_subframe: # Assuming spots are (x, y)
+                # Convert subframe coordinates (relative to subframe top-left) 
+                # to full frame coordinates (relative to full frame top-left)
+                # cy_subframe = row within subframe, cx_subframe = col within subframe
+                # Check coordinate order consistency with _findBrightSpots if issues arise
+                full_frame_y = row_idx * subframe_height + cy_subframe 
+                full_frame_x = col_idx * subframe_width + cx_subframe
+                positions.append((full_frame_x, full_frame_y)) # Append as (x, y) tuple
         
-        print(f"Total subframes with spots: {len(positions)}")
+        # Check if the final positions list is empty (could happen if spots lists were empty)
+        if not positions:
+            raise ValueError("No valid spot coordinates generated after processing subframes!")
+            
+        print(f"Total spot positions identified: {len(positions)}")
 
         # Step 3: Scan through wavelengths and preprocess data (looping over positions)
         frame_cube = []  # This will hold the final 4D cube (npix, mpix, nwaves, npositions)

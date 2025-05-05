@@ -19,7 +19,9 @@ FILTER_SETTLE_TIME_S = float(config['spl']['filter_settle_time_s'])
 MEASUREMENT_ROOT_FOLDER = config['spl']['measurement_path']
 SHOW_REFERENCE_FRAME = config.getboolean('spl', 'show_reference_frame')
 TNFRINGES = config['spl']['tn_fringes']
-
+PIX2UM = float(config['spl']['pix2um'])
+CROP_HEIGHT = int(config['spl']['crop_height'])
+CROP_WIDTH = int(config['spl']['crop_width'])
 
 IPCAMERA = config['servers']['ip_server_camera']
 PORTCAMERA = int(config['servers']['port_server_camera'])

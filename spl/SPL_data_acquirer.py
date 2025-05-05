@@ -40,7 +40,7 @@ class SplAcquirer():
         self._logger = logging.getLogger('SPL_ACQ:')
         self._filter = filter_obj
         self._camera = camera_obj
-        self._pix2um = 4.5 # pixel to um conversion for AVT GT5120
+        self._pix2um = config.PIX2UM  # Using config value
         self._exptime = None
         self._n_rows = config.N_ROWS
         self._m_cols = config.M_COLS
@@ -51,18 +51,26 @@ class SplAcquirer():
         measurement_path = config.MEASUREMENT_ROOT_FOLDER
         return measurement_path
      
-    def acquire(self, lambda_vector, exptime, numframes=2, mask=None, display_reference=False):
+    def acquire(self, lambda_vector=None, exptime=None, numframes=None, mask=None, display_reference=False):
         """
         Acquires images at different wavelengths, subtracts dark frame, 
         and saves them as FITS cubes.
         
         Args:
-            lambda_vector: Array of wavelengths to acquire
-            exptime: Exposure time in milliseconds
-            numframes: Number of frames to average (default: 2)
+            lambda_vector: Array of wavelengths to acquire. If None, uses config values
+            exptime: Exposure time in milliseconds. If None, uses config value
+            numframes: Number of frames to average. If None, uses config value
             mask: Optional mask to apply
-            display_reference: If True, displays the reference image after dark subtraction (default: False)
+            display_reference: If True, displays the reference image after dark subtraction
         """
+        # Use configuration values if parameters are not provided
+        if lambda_vector is None:
+            lambda_vector = np.arange(config.LAMBDAMIN, config.LAMBDAMAX + 1, config.LAMBDASTEP)
+        if exptime is None:
+            exptime = config.EXPTIME
+        if numframes is None:
+            numframes = config.NUMFRAMES
+
         # Capture dark frame (with lamp off)
         dark_frame = self._capture_dark_frame(exptime)
         # Save the dark frame
@@ -76,23 +84,21 @@ class SplAcquirer():
         pyfits.writeto(fits_file_name, lambda_vector)
 
         # Step 1: Capture reference frame
-        reference_image = self._captureReferenceFrame(700, exptime)
+        reference_image = self._captureReferenceFrame(config.REFERENCE_LAMBDA, exptime)
         
         # Ensure reference image is float32 and 2D
         if reference_image.ndim == 3:
             reference_image = np.mean(reference_image, axis=2)
         reference_image = reference_image.astype(np.float32)
-        #print(f"Reference image shape: {reference_image.shape}, dtype: {reference_image.dtype}, min: {np.min(reference_image)}, max: {np.max(reference_image)}")
         
         # Subtract the dark frame from the reference image
         reference_image -= self._dark_frame
-        #print(f"After dark subtraction - min: {np.min(reference_image)}, max: {np.max(reference_image)}")
         
         # Clip negative values to zero
         reference_image = np.clip(reference_image, 0, None)
         
         # Display reference image if requested
-        if display_reference:
+        if display_reference or config.SHOW_REFERENCE_FRAME:
             try:
                 plt.figure(figsize=(10, 8))
                 plt.imshow(reference_image, cmap='gray', origin='lower')
@@ -131,15 +137,12 @@ class SplAcquirer():
         
         # Step 2: Combine spot positions from subframes and convert to full frame coordinates
         positions = []
-        subframe_height = reference_image.shape[0] // 3
-        subframe_width = reference_image.shape[1] // 2
-        n_cols_slice = 2 # Number of columns used in slicing
+        subframe_height = reference_image.shape[0] // self._n_rows
+        subframe_width = reference_image.shape[1] // self._m_cols
         
         # Iterate through the flattened list of spot lists (one per subframe)
         for k, spots_in_subframe in enumerate(subframe_positions):
             if not spots_in_subframe:
-                # Optional: Log if a subframe is empty
-                # self._logger.debug(f"No spots found in subframe index {k}")
                 continue # Skip this subframe if no spots were found
                 
             # Calculate the row and column index of this subframe
@@ -147,29 +150,26 @@ class SplAcquirer():
             col_idx = k % n_cols_slice
             
             # Iterate through spots found WITHIN this subframe
-            for (cx_subframe, cy_subframe) in spots_in_subframe: # Assuming spots are (x, y)
-                # Convert subframe coordinates (relative to subframe top-left) 
-                # to full frame coordinates (relative to full frame top-left)
-                # cy_subframe = row within subframe, cx_subframe = col within subframe
-                # Check coordinate order consistency with _findBrightSpots if issues arise
+            for (cx_subframe, cy_subframe) in spots_in_subframe:
+                # Convert subframe coordinates to full frame coordinates
                 full_frame_y = row_idx * subframe_height + cy_subframe 
                 full_frame_x = col_idx * subframe_width + cx_subframe
-                positions.append((full_frame_x, full_frame_y)) # Append as (x, y) tuple
+                positions.append((full_frame_x, full_frame_y))
         
-        # Check if the final positions list is empty (could happen if spots lists were empty)
+        # Check if the final positions list is empty
         if not positions:
             raise ValueError("No valid spot coordinates generated after processing subframes!")
             
         print(f"Total spot positions identified: {len(positions)}")
 
-        # Step 3: Scan through wavelengths and preprocess data (looping over positions)
-        frame_cube = []  # This will hold the final 4D cube (npix, mpix, nwaves, npositions)
+        # Step 3: Scan through wavelengths and preprocess data
+        frame_cube = []
         for wl in lambda_vector:
             print(f"Acquiring image at {wl} nm...")
             print(f'Exposure time: {exptime} ms')
             self._filter.move_to(wl)
             if wl == lambda_vector[0]:
-                time.sleep(10)
+                time.sleep(config.FILTER_SETTLE_TIME_S)
             self._camera.setExposureTime(exptime)
             image = self._camera.getFutureFrames(numframes).toNumpyArray()
 
@@ -186,23 +186,16 @@ class SplAcquirer():
             image = np.clip(image, 0, None)
 
             # Step 4: Pre-process each frame for all detected positions
-            processed_wavelength_frames = []  # Holds preprocessed images for each position at this wavelength
+            processed_wavelength_frames = []
             for idx, pos in enumerate(positions):
-                cx, cy = pos  # Spot coordinates (now full frame coordinates)
-                #print(f"Processing spot at (cx={cx}, cy={cy}) at {wl} nm")
-                crop = self._preProcessing(image, cy, cx)  # Preprocess image around the spot
+                cx, cy = pos
+                crop = self._preProcessing(image, cy, cx)
                 file_name = 'image_%dnm_pos%02d.fits' % (wl, idx)
                 self._saveCameraFrame(file_name, crop, wavelength=wl)
                 processed_wavelength_frames.append(crop)
             
-            # Append the processed frames for the current wavelength (shape: npix, mpix, npositions)
             frame_cube.append(processed_wavelength_frames)
 
-        # Convert the frame_cube to a numpy array of shape (npix, mpix, nwaves, npositions)
-        #frame_cube = np.array(frame_cube)
-        
-        # Step 5: Save data
-        #self._saveFitsCubes(lambda_vector, frame_cube)
         print(f"Data saved in {self._dove}")
         print("Acquisition complete.")
         return tt
@@ -249,12 +242,9 @@ class SplAcquirer():
         print(f'Acquiring reference image at {wavelength} nm...')
         print(f'Exposure time: {exptime} ms')
         self._filter.move_to(wavelength)
-        time.sleep(10)
+        time.sleep(config.FILTER_SETTLE_TIME_S)  # Using config value
         self._camera.setExposureTime(exptime)
         image = self._camera.getFutureFrames(1).toNumpyArray()
-        # plt.imshow(image, cmap='gray')
-        # plt.title(f'Reference Image at {wavelength} nm')
-        # plt.show()
         return image
 
     def _findSpotPositions(self, image):
@@ -372,9 +362,8 @@ class SplAcquirer():
         returns:
             crop = cut camera frame
         '''
-        xcrop = 150
-        #xcrop = 100
-        ycrop = 100
+        xcrop = config.CROP_WIDTH  # Using config value
+        ycrop = config.CROP_HEIGHT  # Using config value
 
         if image.ndim != 2:
             raise ValueError("Expected a 2-dimensional image array")
@@ -385,9 +374,6 @@ class SplAcquirer():
         bkg = np.ma.mean(image[id_bkg])
         img = image - bkg
         crop = img[cy-ycrop: cy+ycrop, cx-xcrop: cx+xcrop]
-        # print('Crop peak counts', int(np.max(crop)))
-        # plt.imshow(crop, cmap='gray')
-        # plt.show()
         return crop
     
     def _capture_dark_frame(self, exptime):

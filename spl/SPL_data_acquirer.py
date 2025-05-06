@@ -368,12 +368,71 @@ class SplAcquirer():
         if image.ndim != 2:
             raise ValueError("Expected a 2-dimensional image array")
 
-        tmp = np.zeros((image.shape[0], image.shape[1]))
-        tmp[cy-ycrop: cy+ycrop, cx-xcrop: cx+xcrop] = 1
-        id_bkg = np.where(tmp == 0)
-        bkg = np.ma.mean(image[id_bkg])
+        # Ensure image is float32 for calculations to save memory
+        if image.dtype != np.float32:
+             # Check if conversion is safe (e.g., from uint16)
+             if np.can_cast(image.dtype, np.float32):
+                 image = image.astype(np.float32)
+             else:
+                 # If cannot safely cast to float32, use float64
+                 image = image.astype(np.float64)
+
+
+        rows, cols = image.shape
+        row_start, row_end = cy - ycrop, cy + ycrop
+        col_start, col_end = cx - xcrop, cx + xcrop
+
+        # Create a boolean mask: True for crop area (to be masked), False for background
+        mask = np.zeros(image.shape, dtype=bool)
+        # Clip indices to be within image bounds for safe slicing
+        row_start_clip = max(0, row_start)
+        row_end_clip = min(rows, row_end)
+        col_start_clip = max(0, col_start)
+        col_end_clip = min(cols, col_end)
+        # Set mask to True only within the valid clipped region
+        if row_start_clip < row_end_clip and col_start_clip < col_end_clip:
+            mask[row_start_clip:row_end_clip, col_start_clip:col_end_clip] = True
+
+        # Create a masked array where the crop area is masked (mask=True)
+        masked_image = np.ma.array(image, mask=mask)
+
+        # Calculate the mean of the *unmasked* (background) pixels.
+        # Use the image's current dtype (hopefully float32) for the calculation.
+        bkg = np.ma.mean(masked_image, dtype=image.dtype)
+        if bkg is np.ma.masked: # Handle case where background is empty or all masked
+            self._logger.warning("Background calculation resulted in a masked value. Using 0 as background.")
+            bkg = 0
+        else:
+            # Ensure bkg is a scalar float of the correct type
+            bkg = image.dtype.type(bkg)
+
+
+        # Subtract background from the original image (result maintains dtype)
         img = image - bkg
-        crop = img[cy-ycrop: cy+ycrop, cx-xcrop: cx+xcrop]
+
+        # --- Extract the crop with robust boundary handling ---
+        # Create an empty array for the crop with the desired size and dtype
+        crop = np.zeros((2 * ycrop, 2 * xcrop), dtype=img.dtype)
+
+        # Calculate the valid source region within the image
+        src_row_start = max(0, row_start)
+        src_row_end = min(rows, row_end)
+        src_col_start = max(0, col_start)
+        src_col_end = min(cols, col_end)
+
+        # Calculate the corresponding destination region within the crop array
+        dst_row_start = src_row_start - row_start
+        dst_row_end = src_row_end - row_start
+        dst_col_start = src_col_start - col_start
+        dst_col_end = src_col_end - col_start
+
+        # Copy the valid data from img to crop only if regions are valid
+        if (dst_row_end > dst_row_start) and (dst_col_end > dst_col_start) and \
+           (src_row_end > src_row_start) and (src_col_end > src_col_start):
+            crop[dst_row_start:dst_row_end, dst_col_start:dst_col_end] = \
+                img[src_row_start:src_row_end, src_col_start:src_col_end]
+        # --- End crop extraction ---
+
         return crop
     
     def _capture_dark_frame(self, exptime):

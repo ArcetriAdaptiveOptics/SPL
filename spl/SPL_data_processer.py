@@ -124,6 +124,28 @@ class SplProcessor():
         if not frame_data:
              self._logger.error(f"No valid images loaded or centroids calculated for position {position:02d}. Skipping position.")
              return
+        # 2.1 Perform Weighted Linear Fit for X-Centroid vs Wavelength
+        x_fit_coeffs = None
+        if len(valid_wavelengths_for_fit) >= 2: # Need at least 2 points for a line fit
+            try:
+                x_fit = np.array(valid_wavelengths_for_fit)
+                x_centroid_fit = np.array([fd[5] for fd in frame_data if not np.isnan(fd[5])]) # Extract X centroids
+                
+                # --- Calculate Gaussian Weights --- 
+                center_wl = (x_fit.min() + x_fit.max()) / 2.0
+                # Use 1/4 of the wavelength range as sigma for weighting
+                sigma_wl = (x_fit.max() - x_fit.min()) / 4.0 
+                if sigma_wl < 1e-6: sigma_wl = 1.0 # Avoid division by zero if range is tiny
+                weights = np.exp(-((x_fit - center_wl)**2) / (2 * sigma_wl**2))
+                # --- End Weights --- 
+                
+                x_fit_coeffs = np.polyfit(x_fit, x_centroid_fit, deg=1, w=weights)
+                self._logger.info(f"Weighted linear fit (X vs Wavelength): Slope={x_fit_coeffs[0]:.4f}, Intercept={x_fit_coeffs[1]:.2f}")
+            except Exception as e:
+                self._logger.error(f"Error performing weighted linear fit for X-centroid: {e}. Panning will be skipped.")
+                x_fit_coeffs = None
+        else:
+            self._logger.warning("Not enough valid centroid points (<2) to perform linear fit. Panning will be skipped.")
 
         # 2. Perform Weighted Linear Fit for Y-Centroid vs Wavelength
         y_fit_coeffs = None
@@ -190,30 +212,71 @@ class SplProcessor():
         self._logger.info(f"Common Angle for Rotation: {common_angle:.2f} (Source: {angle_source})")
         self._logger.info(f"Common Centroid for Rotation Center: {common_centroid}")
         
-        # 4. Process each individual frame: Y-Pan based on fit, Rotate around common centroid
-        for raw_image, header, path, current_wavelength, centroid_y, centroid_x in frame_data:
+        # 4. Process each individual frame: Pan based on robust fit, Rotate around common centroid
+        for raw_image, header, path, current_wavelength, measured_centroid_y, measured_centroid_x in frame_data: # Renamed for clarity
             self._logger.info(f"Processing frame {os.path.basename(path)} (Wavelength: {current_wavelength} nm)")
             
-            # Calculate vertical shift based on fit
-            image_to_rotate = raw_image # Start with original
-            if y_fit_coeffs is not None and not np.isnan(centroid_y):
-                target_y = y_fit_coeffs[0] * current_wavelength + y_fit_coeffs[1]
-                shift_y = target_y - centroid_y
-                self._logger.info(f"  Y-Shift: Target={target_y:.2f}, Measured={centroid_y:.2f}, Shift={shift_y:.2f}")
-                try:
-                    # Apply vertical shift only
-                    image_to_rotate = shift(raw_image, shift=(shift_y, 0), order=3, mode='constant', cval=0.0)
-                except Exception as e:
-                    self._logger.error(f"  Error applying Y-shift: {e}. Using unshifted image for rotation.")
-                    image_to_rotate = raw_image
-            elif y_fit_coeffs is None:
-                 self._logger.info("  Skipping Y-shift (Fit calculation failed or insufficient data).")
-            else: # centroid_y is NaN
-                 self._logger.warning("  Skipping Y-shift (Centroid calculation failed for this frame).")
-                 
-            # Pass the (potentially) Y-shifted image to _processFrame for rotation and cropping
+            panned_image = raw_image # Default to raw_image if panning can't be done
+            final_shift_x = 0.0
+            final_shift_y = 0.0
+            can_pan = True
+
+            # Calculate T_fit_x (target_x_from_fit)
+            target_x_from_fit = np.nan
+            if x_fit_coeffs is not None:
+                target_x_from_fit = x_fit_coeffs[0] * current_wavelength + x_fit_coeffs[1]
+            else:
+                self._logger.warning(f"  Cannot calculate Target X from fit for {os.path.basename(path)} (X-fit coeffs missing). X-panning component will be zero.")
+                # final_shift_x will remain 0.0
+
+            # Calculate T_fit_y (target_y_from_fit)
+            target_y_from_fit = np.nan
+            if y_fit_coeffs is not None:
+                target_y_from_fit = y_fit_coeffs[0] * current_wavelength + y_fit_coeffs[1]
+            else:
+                self._logger.warning(f"  Cannot calculate Target Y from fit for {os.path.basename(path)} (Y-fit coeffs missing). Y-panning component will be zero.")
+                # final_shift_y will remain 0.0
+            
+            if common_centroid is None:
+                self._logger.error(f"  Cannot perform robust panning for {os.path.basename(path)} (Common centroid is None). Using raw image.")
+                can_pan = False
+
+            if can_pan:
+                # Calculate final_shift_x = T_avg_x - T_fit_x
+                # common_centroid is [Y, X]
+                if x_fit_coeffs is not None and common_centroid is not None: # Check x_fit_coeffs again for safety
+                    final_shift_x = common_centroid[1] - target_x_from_fit
+                    self._logger.info(f"  Robust X-Shift Calc: T_avg_x={common_centroid[1]:.2f}, T_fit_x={target_x_from_fit:.2f}, Shift_x={final_shift_x:.2f}")
+                else:
+                    self._logger.info(f"  Skipping X component of robust shift calculation for {os.path.basename(path)} (missing X-fit or common_centroid).")
+                    # final_shift_x remains 0.0
+
+                # Calculate final_shift_y = T_avg_y - T_fit_y
+                if y_fit_coeffs is not None and common_centroid is not None: # Check y_fit_coeffs again for safety
+                    final_shift_y = common_centroid[0] - target_y_from_fit
+                    self._logger.info(f"  Robust Y-Shift Calc: T_avg_y={common_centroid[0]:.2f}, T_fit_y={target_y_from_fit:.2f}, Shift_y={final_shift_y:.2f}")
+                else:
+                    self._logger.info(f"  Skipping Y component of robust shift calculation for {os.path.basename(path)} (missing Y-fit or common_centroid).")
+                    # final_shift_y remains 0.0
+
+                # Apply the combined shift if any shift component is significant
+                if abs(final_shift_x) > 1e-6 or abs(final_shift_y) > 1e-6:
+                    self._logger.info(f"  Applying combined robust shift: (dy={final_shift_y:.2f}, dx={final_shift_x:.2f})")
+                    try:
+                        panned_image = shift(raw_image, shift=(final_shift_y, final_shift_x), order=3, mode='constant', cval=0.0)
+                    except Exception as e:
+                        self._logger.error(f"  Error applying combined shift for {os.path.basename(path)}: {e}. Using raw image for rotation.")
+                        panned_image = raw_image # Fallback
+                else:
+                    self._logger.info(f"  No significant robust shift to apply for {os.path.basename(path)}. Using raw image as panned_image.")
+                    panned_image = raw_image
+            else: # can_pan is False
+                 self._logger.warning(f"  Skipping robust panning for {os.path.basename(path)} due to missing critical components. Using raw image.")
+                 panned_image = raw_image # Ensure panned_image is raw_image
+
+            # Pass the panned_image to _processFrame for rotation and cropping
             try:
-                processed_image = self._processFrame(image_to_rotate, common_angle, common_centroid, debug_contours, path)
+                processed_image = self._processFrame(panned_image, common_angle, common_centroid, debug_contours, path)
                 
                 if processed_image is None: 
                     self._logger.warning(f"Skipping save for frame {os.path.basename(path)} due to processing error in _processFrame.")
@@ -225,8 +288,19 @@ class SplProcessor():
                 header['HISTORY'] = f"Processed by SPL_data_processer."
                 header['HISTORY'] = f"Applied common rotation angle: {common_angle:.2f} deg around common centroid"
                 header['HISTORY'] = f"Rotation angle source: {angle_source}"
-                if y_fit_coeffs is not None and not np.isnan(centroid_y):
-                     header['HISTORY'] = f"Applied pre-rotation Y-shift: {shift_y:.2f} px"
+                if can_pan and (abs(final_shift_x) > 1e-6 or abs(final_shift_y) > 1e-6):
+                     header['HISTORY'] = f"Applied robust pan (T_avg - T_fit): dy={final_shift_y:.2f}, dx={final_shift_x:.2f} px"
+                elif not can_pan:
+                     header['HISTORY'] = f"Robust panning skipped due to missing data (fit coeffs or common_centroid)."
+                else:
+                     header['HISTORY'] = f"Robust panning resulted in zero significant shift."
+
+                # Add details about measured vs fitted if helpful for diagnostics (optional)
+                # if not np.isnan(measured_centroid_x) and not np.isnan(target_x_from_fit):
+                #    header[f'DX_MEAS_VS_FIT'] = (measured_centroid_x - target_x_from_fit, 'Measured X_cen - Fit X_cen for this WL')
+                # if not np.isnan(measured_centroid_y) and not np.isnan(target_y_from_fit):
+                #    header[f'DY_MEAS_VS_FIT'] = (measured_centroid_y - target_y_from_fit, 'Measured Y_cen - Fit Y_cen for this WL')
+                
                 pyfits.writeto(new_filename, processed_image, header=header, overwrite=True)
                 self._logger.info(f"Saved processed image to {new_filename}")
                 
@@ -263,6 +337,10 @@ class SplProcessor():
              try:
                   plt.figure(figsize=(10, 6))
                   plt.plot(plot_wavelengths, plot_centroid_x, marker='x', linestyle='--', color='r', label='Measured X')
+                   # Optionally plot the fitted line
+                  if x_fit_coeffs is not None:
+                      fit_x = np.polyval(x_fit_coeffs, plot_wavelengths)
+                      plt.plot(plot_wavelengths, fit_x, linestyle='--', color='r', label='Weighted Fit X')
                   plt.xlabel("Wavelength (nm)")
                   plt.ylabel("Centroid X-coordinate (pixels)")
                   plt.title(f"Position {position:02d}: Centroid X vs Wavelength")

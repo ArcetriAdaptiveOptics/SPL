@@ -9,6 +9,7 @@ import glob
 import logging
 from astropy.io import fits as pyfits
 from scipy.ndimage import rotate, shift 
+from tqdm import tqdm # Added for progress bar
 from spl.conf import configuration as config
 import re
 from spl import process_psf
@@ -61,7 +62,7 @@ class SplProcessor():
         wavelengths, positions = self.parseFitsFilenames(dove)
         
         # Process each position
-        for position in positions:
+        for position in tqdm(positions, desc="Processing Positions", unit="pos"):
             self._processPosition(dove, position, wavelengths, debug_contours, position_angles)
 
     def parseFitsFilenames(self, data_folder):
@@ -93,7 +94,7 @@ class SplProcessor():
         valid_wavelengths_for_fit = []
         valid_centroid_y_for_fit = []
 
-        for i, path in enumerate(path_list):
+        for i, path in enumerate(tqdm(path_list, desc=f"Frames Pos {position:02d}", unit="frame", leave=False)):
             current_wavelength = wavelengths[i]
             try:
                 with pyfits.open(path) as hduList:

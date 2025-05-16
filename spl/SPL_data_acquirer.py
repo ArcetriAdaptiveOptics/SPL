@@ -18,6 +18,7 @@ from astropy.io import fits as pyfits
 from photutils import centroids
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
+from tqdm import tqdm
 from spl.ground import tracking_number_folder
 from spl.conf import configuration as config
 
@@ -44,6 +45,44 @@ class SplAcquirer():
         self._exptime = None
         self._n_rows = config.N_ROWS
         self._m_cols = config.M_COLS
+        self._flux_calibration_data = self._load_flux_calibration()
+        self._CAMERA_EXPTIME_MIN_MS = 0.001  # Minimum exposure time in ms (1 microsecond)
+        self._CAMERA_EXPTIME_MAX_MS = 1000.0 # Maximum exposure time in ms (1,000,000 microseconds or 1 second)
+
+    def _load_flux_calibration(self):
+        """Loads flux calibration data from the FITS file specified in config."""
+        calib_filepath = config.FLUX_CALIBRATION_FILENAME
+        if not calib_filepath:
+            self._logger.info("Flux calibration file not specified in configuration. Proceeding without flux calibration.")
+            return None
+
+        if not os.path.isfile(calib_filepath):
+            self._logger.warning(f"Flux calibration file not found at '{calib_filepath}'. Proceeding without flux calibration.")
+            return None
+
+        try:
+            with pyfits.open(calib_filepath) as hdul:
+                if len(hdul) < 2 or 'MEAN_WAVELENGTH_CORRECTIONS' not in hdul:
+                    self._logger.error(f"Flux calibration FITS file '{calib_filepath}' does not contain the required HDU 'MEAN_WAVELENGTH_CORRECTIONS'.")
+                    return None
+                
+                calib_table_hdu = hdul['MEAN_WAVELENGTH_CORRECTIONS']
+                data = calib_table_hdu.data
+                
+                # Check for required columns
+                required_cols = ['WAVELENGTH_NM', 'MEAN_EXPOSURE_CORR_FACTOR']
+                missing_cols = [col for col in required_cols if col not in data.columns.names]
+                if missing_cols:
+                    self._logger.error(f"Flux calibration table in '{calib_filepath}' is missing required columns: {missing_cols}.")
+                    return None
+
+                calibration_map = {row['WAVELENGTH_NM']: row['MEAN_EXPOSURE_CORR_FACTOR'] 
+                                   for row in data}
+                self._logger.info(f"Successfully loaded flux calibration data from '{calib_filepath}' for {len(calibration_map)} wavelengths.")
+                return calibration_map
+        except Exception as e:
+            self._logger.error(f"Error loading flux calibration file '{calib_filepath}': {e}")
+            return None
 
     @staticmethod
     def _storageFolder(path=None):
@@ -51,7 +90,130 @@ class SplAcquirer():
         measurement_path = config.MEASUREMENT_ROOT_FOLDER
         return measurement_path
      
-    def acquire(self, lambda_vector=None, exptime=None, numframes=None, mask=None, display_reference=False):
+    # def _populate_fits_header_from_snapshot(self, header, snapshot_dict, current_prefix):
+    #     """
+    #     Recursively populates a FITS header with key-value pairs from a snapshot dictionary,
+    #     using HIERARCH FITS convention for clarity.
+
+    #     Args:
+    #         header (pyfits.Header): The FITS header object to populate.
+    #         snapshot_dict (dict): The dictionary containing snapshot data.
+    #         current_prefix (str): The prefix string for the current level of keys (e.g., 'CAMSET', 'CAMSET STATUS').
+    #     """
+    #     if not isinstance(snapshot_dict, dict):
+    #         # self._logger.debug(f"Snapshot part for prefix '{current_prefix}' is not a dict, skipping: {snapshot_dict}")
+    #         return
+
+    #     for key, value in snapshot_dict.items():
+    #         # Construct a descriptive FITS keyword string using the prefix and current key
+    #         # Replace problematic characters for FITS keywords but aim for readability
+    #         # Spaces are okay as astropy will handle HIERARCH
+    #         clean_key_part = str(key).strip()
+    #         # Basic cleaning: replace multiple spaces with one, remove leading/trailing problematic chars for key parts
+    #         clean_key_part = re.sub(r'\s+', ' ', clean_key_part)
+    #         clean_key_part = re.sub(r'[^a-zA-Z0-9_.: -]', '', clean_key_part) # Allow a few more chars for HIERARCH
+
+    #         if not clean_key_part: # If key becomes empty after cleaning
+    #             # self._logger.warning(f"Skipping empty key generated from original key '{key}' under prefix '{current_prefix}'.")
+    #             continue
+
+    #         # Form the full keyword path, astropy handles HIERARCH for long ones / with spaces
+    #         fits_keyword_str = f"{current_prefix.upper()} {clean_key_part.upper()}"
+    #         # Limit total HIERARCH keyword string length (conventionally up to ~68-70 chars for keyword part)
+    #         fits_keyword_str = fits_keyword_str[:68].strip()
+
+    #         comment_str = f"Snapshot value for {current_prefix} {key}"[:68]
+
+    #         if isinstance(value, dict):
+    #             # If the value is another dictionary, recurse
+    #             self._populate_fits_header_from_snapshot(header, value, fits_keyword_str)
+    #         else:
+    #             # Process primitive values
+    #             processed_value = None
+    #             value_comment_suffix = ""
+
+    #             if value is None:
+    #                 processed_value = 'N/A' # FITS doesn't have None, use a placeholder string
+    #                 value_comment_suffix = " (was None)"
+    #             elif isinstance(value, bool):
+    #                 processed_value = value # astropy handles T/F
+    #             elif isinstance(value, (int, float, np.number)):
+    #                 if np.isnan(value) or np.isinf(value):
+    #                     processed_value = 'N/A'
+    #                     value_comment_suffix = " (was NaN/Inf)"
+    #                 else:
+    #                     processed_value = value
+    #             elif isinstance(value, str):
+    #                 # Ensure ASCII compliance and truncate
+    #                 # Make control characters visible and remove them, then encode to ASCII
+    #                 s = repr(value)[1:-1] # Get string content without quotes, e.g. '\r\n'
+    #                 s = s.replace('\\r', '').replace('\\n', '').replace('\\t', '') # Remove 
+ 
+    #                 # Replace other common non-printable or problematic characters if necessary
+    #                 # For now, focus on what repr and encode handle.
+    #                 ascii_value = s.encode('ascii', 'replace').decode('ascii')
+    #                 processed_value = ascii_value[:68] # FITS string values also have length limits
+    #             else:
+    #                 try:
+    #                     str_val = str(value)
+    #                     ascii_value = str_val.encode('ascii', 'replace').decode('ascii')
+    #                     processed_value = ascii_value[:68]
+    #                     value_comment_suffix = f" (original type: {type(value).__name__})"
+    #                 except Exception as e_conv:
+    #                     self._logger.warning(f"Could not convert value for '{fits_keyword_str}' to string: {e_conv}. Skipping.")
+    #                     continue # Skip this key-value pair
+                
+    #             try:
+    #                 # Check if key already exists (e.g. from a previous, less specific add)
+    #                 # This simple check might not be sufficient for complex HIERARCH overlaps.
+    #                 if fits_keyword_str in header:
+    #                     # self._logger.debug(f"FITS keyword '{fits_keyword_str}' already exists. Overwriting.")
+    #                     pass # Allow overwrite, astropy handles it
+    #                 header[fits_keyword_str] = (processed_value, comment_str + value_comment_suffix)
+    #             except Exception as e:
+    #                 self._logger.warning(f"Could not add FITS entry for keyword '{fits_keyword_str}' (Original key: '{key}'): {e} (Value: {value}, Type: {type(value)})")
+
+    def _set_camera_exposure_time(self, exptime_ms: float) -> float:
+        """
+        Helper method to set camera exposure time with proper limits.
+        
+        Args:
+            exptime_ms (float): Desired exposure time in milliseconds
+            
+        Returns:
+            float: The actual exposure time that was set (may be limited)
+        """
+        # Ensure exposure time is within camera limits
+        if exptime_ms < self._CAMERA_EXPTIME_MIN_MS:
+            self._logger.info(f"Requested exposure time {exptime_ms:.3f}ms is below minimum ({self._CAMERA_EXPTIME_MIN_MS:.3f}ms). Using minimum.")
+            exptime_ms = self._CAMERA_EXPTIME_MIN_MS
+        elif exptime_ms > self._CAMERA_EXPTIME_MAX_MS:
+            self._logger.info(f"Requested exposure time {exptime_ms:.3f}ms exceeds maximum ({self._CAMERA_EXPTIME_MAX_MS:.1f}ms). Using maximum.")
+            exptime_ms = self._CAMERA_EXPTIME_MAX_MS
+            
+        try:
+            self._camera.setExposureTime(exptime_ms)
+            # self._logger.debug(f"Successfully set camera exposure time to {exptime_ms:.3f}ms.")
+            return exptime_ms
+        except Exception as e:
+            # Log the value of exptime_ms that caused the error *before* fallback.
+            self._logger.error(f"Failed to set exposure time to {exptime_ms:.3f}ms (intended value): {e}")
+            # Fallback calculation logic:
+            # This re-applies clipping, which is fine. If exptime_ms was already clipped, safe_exptime will be the same.
+            safe_exptime = min(max(exptime_ms, self._CAMERA_EXPTIME_MIN_MS), self._CAMERA_EXPTIME_MAX_MS)
+            self._logger.info(f"Attempting to fall back to safe exposure time: {safe_exptime:.3f}ms")
+            try:
+                self._camera.setExposureTime(safe_exptime)
+                self._logger.info(f"Successfully set fallback exposure time to {safe_exptime:.3f}ms.")
+                return safe_exptime
+            except Exception as e_fallback:
+                self._logger.critical(f"CRITICAL: Failed to set fallback exposure time {safe_exptime:.3f}ms: {e_fallback}. Camera may be unresponsive.")
+                # Depending on desired behavior, could raise an error or return a "known bad" value
+                # For now, return the problematic 'safe_exptime' as it's the last attempted.
+                return safe_exptime 
+
+    def acquire(self, lambda_vector=None, exptime=None, numframes=None, mask=None, display_reference=False,
+                actuator_position=None): # Changed from actuator_snapshot to actuator_position
         """
         Acquires images at different wavelengths, subtracts dark frame, 
         and saves them as FITS cubes.
@@ -62,6 +224,7 @@ class SplAcquirer():
             numframes: Number of frames to average. If None, uses config value
             mask: Optional mask to apply
             display_reference: If True, displays the reference image after dark subtraction
+            actuator_position (float, optional): Position of the actuator in nanometers.
         """
         # Use configuration values if parameters are not provided
         if lambda_vector is None:
@@ -71,14 +234,12 @@ class SplAcquirer():
         if numframes is None:
             numframes = config.NUMFRAMES
 
-        # Capture dark frame (with lamp off)
-        dark_frame = self._capture_dark_frame(exptime)
-        # Save the dark frame
-        #self._save_dark_frame(dark_frame)
-        
         # Now subtract the dark frame from subsequent frames during acquisition
+        self._set_camera_exposure_time(exptime)
+        dark_frame = self._capture_dark_frame(exptime)
         self._dark_frame = dark_frame  # Store the dark frame for later use
 
+        # Create a new folder for the measurement
         self._dove, tt = tracking_number_folder.createFolderToStoreMeasurements(self._storageFolder())
         fits_file_name = os.path.join(self._dove, 'lambda_vector.fits')
         pyfits.writeto(fits_file_name, lambda_vector)
@@ -88,51 +249,20 @@ class SplAcquirer():
         
         # Ensure reference image is float32 and 2D
         if reference_image.ndim == 3:
-            reference_image = np.mean(reference_image, axis=2)
+            reference_image = np.mean(reference_image, axis=2) # Assuming (H, W, N_frames)
         reference_image = reference_image.astype(np.float32)
         
-        # Subtract the dark frame from the reference image
+        # Subtract the dark frame from the reference image and clip negative values to zero
         reference_image -= self._dark_frame
-        
-        # Clip negative values to zero
         reference_image = np.clip(reference_image, 0, None)
-        
-        # Display reference image if requested
-        if display_reference or config.SHOW_REFERENCE_FRAME:
-            try:
-                plt.figure(figsize=(10, 8))
-                plt.imshow(reference_image, cmap='gray', origin='lower')
-                plt.colorbar(label='Intensity')
-                
-                # --- Add Slice Boundary Visualization ---
-                height, width = reference_image.shape
-                n_rows_slice = self._n_rows
-                n_cols_slice = self._m_cols
-                row_size = height // n_rows_slice
-                col_size = width // n_cols_slice
-
-                # Draw horizontal lines
-                for i in range(1, n_rows_slice):
-                    plt.axhline(y=i * row_size, color='r', linestyle='--', alpha=0.7)
-                # Draw vertical lines
-                for j in range(1, n_cols_slice):
-                    plt.axvline(x=j * col_size, color='r', linestyle='--', alpha=0.7)
-                # --- End Slice Boundary Visualization ---
-
-                plt.title(f'Reference Image (Dark Subtracted) with {n_rows_slice}x{n_cols_slice} Slice Boundaries')
-                plt.xlabel("X pixel")
-                plt.ylabel("Y pixel")
-                plt.show()
-            except Exception as e:
-                self._logger.warning(f"Could not display reference image with slice boundaries: {e}")
         
         # Step 1.5: Slice the reference image and find spots in each subframe
         subframe_positions = self._sliceAndFindSpotPositions(reference_image, n=self._n_rows, m=self._m_cols)  
-        print(f"Looking for spots in {len(subframe_positions)} subframes.")
+        self._logger.info(f"Looking for spots in {len(subframe_positions)} subframes.")
         
         # Check if any spots were found in any subframe
         if not any(subframe_positions):
-             # Raise error earlier if no spots are found anywhere
+             self._logger.error("No bright spots detected in ANY subframe!")
              raise ValueError("No bright spots detected in ANY subframe!")
         
         # Step 2: Combine spot positions from subframes and convert to full frame coordinates
@@ -140,65 +270,122 @@ class SplAcquirer():
         subframe_height = reference_image.shape[0] // self._n_rows
         subframe_width = reference_image.shape[1] // self._m_cols
         
-        # Iterate through the flattened list of spot lists (one per subframe)
         for k, spots_in_subframe in enumerate(subframe_positions):
             if not spots_in_subframe:
-                continue # Skip this subframe if no spots were found
-                
-            # Calculate the row and column index of this subframe
-            row_idx = k // n_cols_slice
-            col_idx = k % n_cols_slice
-            
-            # Iterate through spots found WITHIN this subframe
+                continue 
+            if self._m_cols == 0:
+                self._logger.error("self._m_cols is zero, cannot calculate subframe column index. Skipping subframe processing.")
+                continue
+            row_idx = k // self._m_cols
+            col_idx = k % self._m_cols
             for (cx_subframe, cy_subframe) in spots_in_subframe:
-                # Convert subframe coordinates to full frame coordinates
                 full_frame_y = row_idx * subframe_height + cy_subframe 
                 full_frame_x = col_idx * subframe_width + cx_subframe
                 positions.append((full_frame_x, full_frame_y))
         
-        # Check if the final positions list is empty
         if not positions:
+            self._logger.error("No valid spot coordinates generated after processing subframes!")
             raise ValueError("No valid spot coordinates generated after processing subframes!")
             
-        print(f"Total spot positions identified: {len(positions)}")
+        self._logger.info(f"Total spot positions identified: {len(positions)}")
+
+        if display_reference or config.SHOW_REFERENCE_FRAME:
+            self._display_reference_image(reference_image, positions, self._n_rows, self._m_cols)
 
         # Step 3: Scan through wavelengths and preprocess data
         frame_cube = []
-        for wl in lambda_vector:
-            print(f"Acquiring image at {wl} nm...")
-            print(f'Exposure time: {exptime} ms')
+        for wl_idx, wl in enumerate(tqdm(lambda_vector, desc="Acquiring Wavelengths", unit="wvln")):
+            self._logger.info(f"Acquiring image at {wl} nm...")
+            
+            current_exptime = exptime # Base exptime for this wavelength
+
+            # Adjust exposure time based on flux calibration data, if available
+            if self._flux_calibration_data:
+                correction_factor = self._flux_calibration_data.get(wl, 1.0) # Default to 1.0 if wl not in calib
+                if correction_factor != 1.0:
+                    adjusted_exptime = int(exptime * correction_factor) # exptime is the base exptime
+                    self._logger.info(f"Flux calib: wl={wl}nm, factor={correction_factor:.2f}, base_exp={exptime}ms, adjusted_exp={adjusted_exptime}ms")
+                    if adjusted_exptime > 0: # Ensure exposure time is positive
+                        current_exptime = adjusted_exptime
+                        # Max limit check removed here, _set_camera_exposure_time will handle it.
+                    else:
+                        self._logger.warning(f"Flux calibration for {wl}nm resulted in non-positive exptime ({adjusted_exptime}ms). Using base exptime {exptime}ms for this iteration.")
+                        # current_exptime remains the initial 'exptime' for this iteration
+                else:
+                    self._logger.debug(f"No flux calibration correction for {wl}nm or factor is 1.0. Using base exptime {exptime}ms.")
+            
+            # Set filter and acquire image
+            filter_move_start_time = time.time()
             self._filter.move_to(wl)
-            if wl == lambda_vector[0]:
-                time.sleep(config.FILTER_SETTLE_TIME_S)
-            self._camera.setExposureTime(exptime)
+            filter_move_end_time = time.time()
+            self._logger.info(f"TIMING: self._filter.move_to({wl}) took {filter_move_end_time - filter_move_start_time:.4f} s")
+
+            # Set exposure time - this might be redundant if flux calib did it,
+            # but ensures it's set if no calib or if calib resulted in no change / invalid value.
+            exposure_set_start_time = time.time()
+            actual_exptime = self._set_camera_exposure_time(current_exptime)
+            exposure_set_end_time = time.time()
+            self._logger.info(f"TIMING: self._camera.setExposureTime({actual_exptime}) took {exposure_set_end_time - exposure_set_start_time:.4f} s")
+            
+            frame_acq_start_time = time.time()
             image = self._camera.getFutureFrames(numframes).toNumpyArray()
+            frame_acq_end_time = time.time()
+            self._logger.info(f"TIMING: self._camera.getFutureFrames({numframes}) took {frame_acq_end_time - frame_acq_start_time:.4f} s (Exposure: {actual_exptime}ms)")
 
-            # If the image has more than one frame, average them
             if image.ndim == 3:
-                image = np.mean(image, axis=2)
-            else:
-                image = np.mean(image, axis=0)
+                 image = np.mean(image, axis=2) # Assuming (H, W, N_frames)
+            image = image.astype(np.float32) # Ensure image is float32 before dark subtraction
 
-            # Subtract the dark frame from the acquired image
             image -= self._dark_frame
-
-            # Clip negative values to zero
             image = np.clip(image, 0, None)
 
-            # Step 4: Pre-process each frame for all detected positions
             processed_wavelength_frames = []
             for idx, pos in enumerate(positions):
                 cx, cy = pos
                 crop = self._preProcessing(image, cy, cx)
                 file_name = 'image_%dnm_pos%02d.fits' % (wl, idx)
-                self._saveCameraFrame(file_name, crop, wavelength=wl)
+                self._saveCameraFrame(file_name, crop, wavelength=wl, exptime_ms=actual_exptime,
+                                      actuator_position=actuator_position) # Pass actuator_position
                 processed_wavelength_frames.append(crop)
             
             frame_cube.append(processed_wavelength_frames)
 
-        print(f"Data saved in {self._dove}")
-        print("Acquisition complete.")
+        self._logger.info(f"Data saved in {self._dove}")
+        self._logger.info("Acquisition complete.")
         return tt
+
+    def _display_reference_image(self, reference_image, spot_positions, n_rows_slice, n_cols_slice):
+        """Displays the reference image with slice boundaries and spot IDs."""
+        try:
+            plt.figure(figsize=(10, 8))
+            plt.imshow(reference_image, cmap='gray', origin='lower')
+            plt.colorbar(label='Intensity')
+            
+            # --- Add Slice Boundary Visualization ---
+            height, width = reference_image.shape
+            row_size = height // n_rows_slice
+            col_size = width // n_cols_slice
+
+            # Draw horizontal lines
+            for i in range(1, n_rows_slice):
+                plt.axhline(y=i * row_size, color='r', linestyle='--', alpha=0.7)
+            # Draw vertical lines
+            for j in range(1, n_cols_slice):
+                plt.axvline(x=j * col_size, color='r', linestyle='--', alpha=0.7)
+            # --- End Slice Boundary Visualization ---
+
+            # --- Add Spot Position IDs ---
+            for idx, (x, y) in enumerate(spot_positions):
+                plt.text(x, y + 5, str(idx), color='yellow', fontsize=8, ha='center', va='bottom',
+                         bbox=dict(facecolor='black', alpha=0.3, pad=0.1, edgecolor='none'))
+            # --- End Spot Position IDs ---
+
+            plt.title(f'Reference Image (Dark Subtracted) with {n_rows_slice}x{n_cols_slice} Slice Boundaries & Spot IDs')
+            plt.xlabel("X pixel")
+            plt.ylabel("Y pixel")
+            plt.show()
+        except Exception as e:
+            self._logger.warning(f"Could not display reference image with slice boundaries and spot IDs: {e}")
 
     def _sliceAndFindSpotPositions(self, image, n, m):
         """
@@ -239,11 +426,11 @@ class SplAcquirer():
 
     def _captureReferenceFrame(self, wavelength, exptime):
         """Captures a reference image at a given wavelength."""
-        print(f'Acquiring reference image at {wavelength} nm...')
-        print(f'Exposure time: {exptime} ms')
+        self._logger.info(f'Acquiring reference image at {wavelength} nm...')
+        self._logger.info(f'Exposure time: {exptime} ms')
         self._filter.move_to(wavelength)
         time.sleep(config.FILTER_SETTLE_TIME_S)  # Using config value
-        self._camera.setExposureTime(exptime)
+        self._set_camera_exposure_time(exptime)
         image = self._camera.getFutureFrames(1).toNumpyArray()
         return image
 
@@ -261,7 +448,8 @@ class SplAcquirer():
         pyfits.writeto(fits_file_name, frame_cube, overwrite=True)
         pyfits.append(fits_file_name, lambda_vector)
 
-    def _saveCameraFrame(self, file_name, frame, wavelength=None):
+    def _saveCameraFrame(self, file_name, frame, wavelength=None, exptime_ms=None,
+                         actuator_position=None): # Changed parameters
         ''' Save camera frames in SPL/TrackingNumber
         '''
         fits_file_name = os.path.join(self._dove, file_name)
@@ -272,10 +460,13 @@ class SplAcquirer():
             data = frame
             mask = None
 
-        # Create header with wavelength information if provided
         header = pyfits.Header()
         if wavelength is not None:
             header['WAVELEN'] = (wavelength, 'Wavelength in nanometers')
+        if exptime_ms is not None:
+            header['EXPTIME'] = (exptime_ms, 'Exposure time in milliseconds')
+        if actuator_position is not None:
+            header['ACTPOS'] = (actuator_position, 'Actuator position in nanometers')
 
         pyfits.writeto(fits_file_name, data, header=header, overwrite=True)
         if mask is not None:
@@ -409,6 +600,7 @@ class SplAcquirer():
 
         # Subtract background from the original image (result maintains dtype)
         img = image - bkg
+        img = np.clip(img, 0, None) # Ensure non-negative values
 
         # --- Extract the crop with robust boundary handling ---
         # Create an empty array for the crop with the desired size and dtype
@@ -445,18 +637,23 @@ class SplAcquirer():
         Returns:
             dark_frame: The captured dark frame image.
         """
-        print("Turning off the filter to capture a dark frame...")
+        self._logger.info("Turning off the filter to capture a dark frame...")
         self._filter.set_bandwidth_mode(1)  
-        time.sleep(5)
-        self._camera.setExposureTime(exptime)
-        dark_frame = self._camera.getFutureFrames(1).toNumpyArray()
-        self._filter.set_bandwidth_mode(2)
+        time.sleep(5) 
+        self._set_camera_exposure_time(exptime)
+        dark_frame_raw = self._camera.getFutureFrames(3).toNumpyArray()
+        self._filter.set_bandwidth_mode(config.FILTER_BANDWIDTH_MODE) 
+        time.sleep(config.FILTER_SETTLE_TIME_S)
         
-        # Convert to a 2D array and ensure float32 type
-        if dark_frame.ndim == 3:
-            dark_frame = np.mean(dark_frame, axis=2)
-        dark_frame = dark_frame.astype(np.float32)
-        print(f"Dark frame shape: {dark_frame.shape}, dtype: {dark_frame.dtype}, min: {np.min(dark_frame)}, max: {np.max(dark_frame)}")
+        if dark_frame_raw.ndim == 3:
+            dark_frame = np.mean(dark_frame_raw, axis=2).astype(np.float32) # Assuming (H,W,N)
+        elif dark_frame_raw.ndim == 2:
+             dark_frame = dark_frame_raw.astype(np.float32)
+        else:
+            self._logger.error(f"Unexpected dark frame dimensions: {dark_frame_raw.shape}")
+            raise ValueError(f"Unexpected dark frame dimensions: {dark_frame_raw.shape}")
+
+        self._logger.info(f"Dark frame shape: {dark_frame.shape}, dtype: {dark_frame.dtype}, min: {np.min(dark_frame)}, max: {np.max(dark_frame)}")
         return dark_frame
 
     def _save_dark_frame(self, dark_frame):
@@ -468,8 +665,24 @@ class SplAcquirer():
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dark_frame_filename = os.path.join(self._dove, f"dark_{timestamp}.fits")
-        print(f"Saving dark frame as {dark_frame_filename}...")
+        self._logger.info(f"Saving dark frame as {dark_frame_filename}...")
         
+        header = pyfits.Header()
+        header['OBJECT'] = ('Dark Frame', 'Type of image')
+        # Try to get actual exposure time from camera for the dark frame
+        try:
+            actual_dark_exptime = self._camera.getExposureTime()
+            header['EXPTIME'] = (actual_dark_exptime, 'Exposure time in milliseconds')
+        except Exception as e:
+            self._logger.warning(f"Could not get camera exposure time for dark frame header: {e}")
+            # Fallback to commanded exptime if actual can't be read (though it should have been just set)
+            # header['EXPTIME'] = (self._exptime, 'Commanded exposure for dark series ms') 
+        header['NFRAMES'] = (3, 'Number of frames averaged for dark')
+        
+        # Removed camera snapshot logic for dark frame header
+        
+        pyfits.writeto(dark_frame_filename, dark_frame.astype(np.float32), header=header, overwrite=True)
+
 #     def _saveInfo(self, file_name):
 #         fits_file_name = os.path.join(self._dove, file_name)
 #         header = pyfits.Header()

@@ -1,7 +1,9 @@
-pysilico
-plico_motor
 numpy
+matplotlib
 astropy
 photutils
+opencv-python
+tqdm
 scipy
-IPython
+plico-motor
+pysilico

@@ -140,7 +140,7 @@ class SplAcquirer():
                 return safe_exptime 
 
     def acquire(self, lambda_vector=None, exptime=None, numframes=None, mask=None, display_reference=False,
-                actuator_position=None, flux_calibration_filename=None):
+                actuator_position=None, flux_calibration_filename=None, reference_image_callback=None):
         """
         Acquires images at different wavelengths, subtracts dark frame, 
         and saves them as FITS cubes.
@@ -154,6 +154,7 @@ class SplAcquirer():
             actuator_position (float, optional): Position of the actuator in nanometers.
             flux_calibration_filename (str, optional): Path to a custom flux calibration file.
                                                      If None, uses the config file or no calibration.
+            reference_image_callback (callable, optional): Callback function to display reference image in GUI
         """
         # Use configuration values if parameters are not provided
         if lambda_vector is None:
@@ -177,13 +178,14 @@ class SplAcquirer():
         pyfits.writeto(fits_file_name, lambda_vector)
 
         # Step 1: Capture reference frame
-        reference_image = self._captureReferenceFrame(config.REFERENCE_LAMBDA, exptime)
-        
+        # Pass numframes to captureReferenceFrame to handle potential averaging there as well
+        reference_image = self._captureReferenceFrame(config.REFERENCE_LAMBDA, exptime, numframes)
+
         # Ensure reference image is float32 and 2D
         if reference_image.ndim == 3:
-            reference_image = np.mean(reference_image, axis=2) # Assuming (H, W, N_frames)
+             reference_image = np.mean(reference_image, axis=2) # Assuming (H, W, N_frames)
         reference_image = reference_image.astype(np.float32)
-        
+
         # Subtract the dark frame from the reference image and clip negative values to zero
         reference_image -= self._dark_frame
         reference_image = np.clip(reference_image, 0, None)
@@ -221,10 +223,13 @@ class SplAcquirer():
             
         self._logger.info(f"Total spot positions identified: {len(positions)}")
 
-        # Always display reference image if requested, regardless of config setting
+        # After reference image is prepared and positions are found:
         if display_reference:
             self._logger.info("Displaying reference image as requested...")
-            self._display_reference_image(reference_image, positions, self._n_rows, self._m_cols)
+            if reference_image_callback is not None:
+                reference_image_callback(reference_image, positions, self._n_rows, self._m_cols)
+            else:
+                self._display_reference_image(reference_image, positions, self._n_rows, self._m_cols)
         elif config.SHOW_REFERENCE_FRAME:
             self._logger.info("Displaying reference image from config setting...")
             self._display_reference_image(reference_image, positions, self._n_rows, self._m_cols)
@@ -377,14 +382,48 @@ class SplAcquirer():
         
         return subframe_positions
 
-    def _captureReferenceFrame(self, wavelength, exptime):
-        """Captures a reference image at a given wavelength."""
+    def _captureReferenceFrame(self, wavelength, exptime, numframes=1):
+        """Captures a reference image at a given wavelength.
+        
+        Args:
+            wavelength (float): Wavelength in nm to set the filter to
+            exptime (float): Exposure time in milliseconds
+            numframes (int, optional): Number of frames to average. Defaults to 1.
+            
+        Returns:
+            numpy.ndarray: The captured and averaged reference image
+        """
         self._logger.info(f'Acquiring reference image at {wavelength} nm...')
-        self._logger.info(f'Exposure time: {exptime} ms')
+        self._logger.info(f'Exposure time: {exptime} ms, frames to average: {numframes}')
         self._filter.move_to(wavelength)
         time.sleep(config.FILTER_SETTLE_TIME_S)  # Using config value
         self._set_camera_exposure_time(exptime)
-        image = self._camera.getFutureFrames(1).toNumpyArray()
+        
+        # Get frames and convert to numpy array
+        frames = self._camera.getFutureFrames(numframes).toNumpyArray()
+        
+        # Handle frame averaging based on shape
+        if frames.ndim == 3:
+            # Determine which dimension is the frame dimension
+            frames_shape = frames.shape
+            self._logger.info(f"Raw reference frame shape: {frames_shape}")
+            
+            if frames_shape[2] == numframes:  # If frames are last dimension (H,W,N)
+                image = np.mean(frames, axis=2).astype(np.float32)
+            elif frames_shape[0] == numframes:  # If frames are first dimension (N,H,W)
+                image = np.mean(frames, axis=0).astype(np.float32)
+            else:
+                error_msg = f"Unexpected reference frame shape: {frames_shape}, expected numframes={numframes}"
+                self._logger.error(error_msg)
+                raise ValueError(error_msg)
+        elif frames.ndim == 2:
+            # Single frame, just convert type
+            image = frames.astype(np.float32)
+        else:
+            error_msg = f"Unexpected reference frame dimensions: {frames.shape}"
+            self._logger.error(error_msg)
+            raise ValueError(error_msg)
+            
         return image
 
     def _findSpotPositions(self, image):
@@ -590,7 +629,7 @@ class SplAcquirer():
         Returns:
             dark_frame: The captured dark frame image.
         """
-        self._logger.info("Turning off the filter to capture a dark frame...")
+        self._logger.info("Turning off the filter to capture a dark frame...")        
         self._filter.set_bandwidth_mode(1)  
         time.sleep(5) 
         self._set_camera_exposure_time(exptime)
@@ -598,13 +637,26 @@ class SplAcquirer():
         self._filter.set_bandwidth_mode(config.FILTER_BANDWIDTH_MODE) 
         time.sleep(config.FILTER_SETTLE_TIME_S)
         
+        # Convert the dark frame to a 2D array with proper averaging
         if dark_frame_raw.ndim == 3:
-            dark_frame = np.mean(dark_frame_raw, axis=2).astype(np.float32) # Assuming (H,W,N)
+            # Check which dimension is the frame dimension
+            frames_shape = dark_frame_raw.shape
+            self._logger.info(f"Raw dark frame shape: {frames_shape}")
+            
+            if frames_shape[2] == 3:  # If frames are last dimension (H,W,N)
+                dark_frame = np.mean(dark_frame_raw, axis=2).astype(np.float32)
+            elif frames_shape[0] == 3:  # If frames are first dimension (N,H,W)
+                dark_frame = np.mean(dark_frame_raw, axis=0).astype(np.float32)
+            else:
+                error_msg = f"Unexpected dark frame shape: {frames_shape}"
+                self._logger.error(error_msg)
+                raise ValueError(error_msg)
         elif dark_frame_raw.ndim == 2:
-             dark_frame = dark_frame_raw.astype(np.float32)
+            dark_frame = dark_frame_raw.astype(np.float32)
         else:
-            self._logger.error(f"Unexpected dark frame dimensions: {dark_frame_raw.shape}")
-            raise ValueError(f"Unexpected dark frame dimensions: {dark_frame_raw.shape}")
+            error_msg = f"Unexpected dark frame dimensions: {dark_frame_raw.shape}"
+            self._logger.error(error_msg)
+            raise ValueError(error_msg)
 
         self._logger.info(f"Dark frame shape: {dark_frame.shape}, dtype: {dark_frame.dtype}, min: {np.min(dark_frame)}, max: {np.max(dark_frame)}")
         return dark_frame

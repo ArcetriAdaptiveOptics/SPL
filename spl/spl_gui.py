@@ -9,7 +9,15 @@ It allows users to set parameters for each step and initiate the processes.
 
 Key Features:
 - Tabbed interface for Acquisition, Processing, and Analysis stages.
-- Input fields for all relevant parameters, with defaults where applicable.
+- Input fields for all relevant parameters, w                logger.info(f"Looking for analysis image at: {image_path}")
+                
+                if os.path.exists(image_path):
+                    # Load and display the image using matplotlib
+                    img = plt.imread(image_path)
+                    self.analysis_figure.clear()
+                    ax = self.analysis_figure.add_subplot(111)
+                    ax.imshow(img)
+                    ax.axis('off')  # Hide axeslts where applicable.
 - Uses the `spl.devices` module to obtain initialized hardware clients (filter, camera)
   which are then passed to the `SplAcquirer`.
 - Interacts with `SplAcquirer`, `SplProcessor`, and `SplAnalyzer` classes from
@@ -33,6 +41,7 @@ import logging
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+import threading
 
 # Actual script imports using relative paths
 from .SPL_data_acquirer import SplAcquirer
@@ -89,7 +98,7 @@ class SplGuiApp:
 
         # Create reference image display frame
         self.ref_image_frame = ttk.LabelFrame(self.tab_acquirer, text="Reference Image")
-        self.ref_image_frame.pack(padx=10, pady=10, fill='both', expand=True)
+        # self.ref_image_frame.pack(padx=10, pady=10, fill='both', expand=True) # Removed initial pack
           # Create matplotlib figure and canvas for reference image display
         self.ref_figure = Figure(figsize=(6, 4), dpi=100)
         self.ref_canvas = FigureCanvasTkAgg(self.ref_figure, master=self.ref_image_frame)
@@ -99,6 +108,9 @@ class SplGuiApp:
         from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
         toolbar = NavigationToolbar2Tk(self.ref_canvas, self.ref_image_frame)
         toolbar.update()
+
+        if not self.display_reference_var.get():
+            self.hide_reference_image()
 
     def _log_message(self, message):
         self.log_text.config(state=tk.NORMAL)
@@ -150,7 +162,10 @@ class SplGuiApp:
         ttk.Button(frame, text="Browse...", command=lambda: self._browse_file(self.flux_calib_var)).grid(row=6, column=3, padx=5, pady=2)
 
         self.display_reference_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Display Reference Image", variable=self.display_reference_var).grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky='w')
+        ttk.Checkbutton(
+            frame, text="Display Reference Image", variable=self.display_reference_var,
+            command=self.on_display_reference_toggle
+        ).grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky='w')
 
         ttk.Label(frame, text="Actuator Position (nm, optional):").grid(row=8, column=0, padx=5, pady=2, sticky='w')
         self.actuator_pos_var = tk.StringVar()
@@ -186,6 +201,22 @@ class SplGuiApp:
             except Exception as e:
                 self._logger.warning(f"Could not convert path to relative: {e}")
                 var_to_set.set(filename)
+
+    def _browse_folder(self, var_to_set):
+        """Browse for a folder and convert its path to be relative to the workspace root if possible."""
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            # Convert absolute path to relative path if it's within the workspace
+            try:
+                workspace_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+                if folder_path.startswith(workspace_path):
+                    rel_path = os.path.relpath(folder_path, workspace_path)
+                    var_to_set.set(rel_path)
+                else:
+                    var_to_set.set(folder_path)
+            except Exception as e:
+                logger.warning(f"Could not convert path to relative: {e}")
+                var_to_set.set(folder_path)
 
     def stop_acquisition(self):
         """Stop the ongoing acquisition process."""
@@ -251,43 +282,59 @@ class SplGuiApp:
             flux_calib_path = self.flux_calib_var.get()
             
             actuator_pos_str = self.actuator_pos_var.get()
-            actuator_position = float(actuator_pos_str) if actuator_pos_str else None            # Create SplAcquirer instance
-            self.acquirer = SplAcquirer(self.filter_obj, self.camera_obj)
-            self.acquirer._stop_acquisition = False
+            actuator_position = float(actuator_pos_str) if actuator_pos_str else None
 
-            # Configure display reference if needed
-            if display_reference:
-                def on_reference_image(image, positions, n_rows, m_cols, figure=None):
-                    # Schedule the update on the main thread
-                    self.master.after_idle(
-                        lambda: self.acquirer._display_reference_image(
-                            image, positions, n_rows, m_cols, figure=self.ref_figure
-                        )
+            # Local variables for use in the thread
+            master = self.master
+            acquirer = SplAcquirer(self.filter_obj, self.camera_obj)
+            acquirer._stop_acquisition = False
+            tt_var = self.tt_var
+            log_message = self._log_message
+            update_reference_image = self.update_reference_image if display_reference else None
+
+            # Define the acquisition function to run in a separate thread
+            def acquisition_thread():
+                try:
+                    # Run acquisition with callback if display_reference is True
+                    tt_result = acquirer.acquire(
+                        lambda_vector=lambda_vector,
+                        exptime=exptime,
+                        numframes=numframes,
+                        mask=mask,
+                        display_reference=display_reference,
+                        actuator_position=actuator_position,
+                        flux_calibration_filename=flux_calib_path if flux_calib_path else None,
+                        reference_image_callback=update_reference_image
                     )
-                self.acquirer._display_reference_image = on_reference_image
 
-            # Run acquisition
-            tt_result = self.acquirer.acquire(
-                lambda_vector=lambda_vector,
-                exptime=exptime,
-                numframes=numframes,
-                mask=mask,
-                display_reference=display_reference,
-                actuator_position=actuator_position,
-                flux_calibration_filename=flux_calib_path if flux_calib_path else None
-            )
-            
-            self.tt_var.set(tt_result)
-            self._log_message(f"Acquisition complete. Tracking Number (tt): {tt_result}")
-            messagebox.showinfo("Acquisition Complete", f"Acquisition finished. Tracking Number (tt): {tt_result}")
+                    # Update GUI after acquisition is complete (in main thread)
+                    master.after(0, lambda: tt_var.set(tt_result))
+                    master.after(0, lambda: log_message(f"Acquisition complete. Tracking Number (tt): {tt_result}"))
+                    master.after(0, lambda: messagebox.showinfo("Acquisition Complete", f"Acquisition finished. Tracking Number (tt): {tt_result}"))
 
-        except ValueError as ve:
-            messagebox.showerror("Input Error", f"Invalid input: {ve}")
-            self._log_message(f"Input Error: {ve}")
+                except ValueError as ve:
+                    logger.exception("ValueError during acquisition:")  # Log the full traceback
+                    err_msg = str(ve)  # Capture the error message
+                    master.after(0, lambda: messagebox.showerror("Input Error", f"Invalid input: {err_msg}"))
+                    master.after(0, lambda: log_message(f"Input Error: {err_msg}"))
+                except Exception as e:
+                    logger.exception("Exception during acquisition:")  # Log the full traceback
+                    err_msg = str(e)  # Capture the error message
+                    master.after(0, lambda: messagebox.showerror("Error", f"An error occurred during acquisition: {err_msg}"))
+                    master.after(0, lambda: log_message(f"Acquisition Error: {err_msg}"))
+                finally:
+                    # Reset acquisition state and button states (in main thread)
+                    master.after(0, lambda: setattr(self, 'acquisition_running', False))
+                    master.after(0, lambda: self.run_button.config(state=tk.NORMAL))
+                    master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
+                    master.after(0, lambda: setattr(acquirer, '_stop_acquisition', False) if hasattr(acquirer, '_stop_acquisition') else None)
+
+            # Start the acquisition thread
+            threading.Thread(target=acquisition_thread).start()
+
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred during acquisition: {e}")
-            self._log_message(f"Acquisition Error: {e}")
-        finally:
+            messagebox.showerror("Error", f"An error occurred during acquisition setup: {e}")
+            self._log_message(f"Acquisition Setup Error: {e}")
             # Reset acquisition state and button states
             self.acquisition_running = False
             self.run_button.config(state=tk.NORMAL)
@@ -299,11 +346,18 @@ class SplGuiApp:
         frame = ttk.LabelFrame(self.tab_processor, text="Processing Parameters")
         frame.pack(padx=10, pady=10, fill='x')
 
-        ttk.Label(frame, text="Tracking Number (tt):").grid(row=0, column=0, padx=5, pady=2, sticky='w')
-        ttk.Entry(frame, textvariable=self.tt_var, width=40).grid(row=0, column=1, padx=5, pady=2, sticky='ew')
+        # TT input with browse button
+        tt_frame = ttk.Frame(frame)
+        tt_frame.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky='ew')
+        
+        ttk.Label(tt_frame, text="Tracking Number (tt):").pack(side=tk.LEFT, padx=(0,5))
+        ttk.Entry(tt_frame, textvariable=self.tt_var, width=40).pack(side=tk.LEFT, expand=True, fill='x', padx=5)
+        ttk.Button(tt_frame, text="Browse...", 
+                  command=lambda: self._browse_folder(self.tt_var)).pack(side=tk.LEFT, padx=(5,0))
 
         self.debug_contours_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Debug Contours", variable=self.debug_contours_var).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='w')
+        ttk.Checkbutton(frame, text="Debug Contours", 
+                       variable=self.debug_contours_var).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='w')
         
         frame.columnconfigure(1, weight=1)
 
@@ -340,16 +394,24 @@ class SplGuiApp:
         frame = ttk.LabelFrame(self.tab_analyzer, text="Analysis Parameters")
         frame.pack(padx=10, pady=10, fill='x')
 
-        ttk.Label(frame, text="Tracking Number (tt):").grid(row=0, column=0, padx=5, pady=2, sticky='w')
-        ttk.Entry(frame, textvariable=self.tt_var, width=40).grid(row=0, column=1, padx=5, pady=2, sticky='ew')
+        # TT input with browse button
+        tt_frame = ttk.Frame(frame)
+        tt_frame.grid(row=0, column=0, columnspan=3, padx=5, pady=2, sticky='ew')
+        
+        ttk.Label(tt_frame, text="Tracking Number (tt):").pack(side=tk.LEFT, padx=(0,5))
+        ttk.Entry(tt_frame, textvariable=self.tt_var, width=40).pack(side=tk.LEFT, expand=True, fill='x', padx=5)
+        ttk.Button(tt_frame, text="Browse...", 
+                  command=lambda: self._browse_folder(self.tt_var)).pack(side=tk.LEFT, padx=(5,0))
 
         self.use_processed_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Use Processed FITS Files", variable=self.use_processed_var).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='w')
+        ttk.Checkbutton(frame, text="Use Processed FITS Files", 
+                       variable=self.use_processed_var).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='w')
 
         ttk.Label(frame, text="Matching Method:").grid(row=2, column=0, padx=5, pady=2, sticky='w')
         self.matching_method_var = tk.StringVar(value="original")
         matching_options = ["original", "cross_correlation", "template_matching"]
-        ttk.Combobox(frame, textvariable=self.matching_method_var, values=matching_options, state="readonly", width=20).grid(row=2, column=1, padx=5, pady=2, sticky='ew')
+        ttk.Combobox(frame, textvariable=self.matching_method_var, 
+                    values=matching_options, state="readonly", width=20).grid(row=2, column=1, padx=5, pady=2, sticky='ew')
         
         frame.columnconfigure(1, weight=1)
 
@@ -419,19 +481,52 @@ class SplGuiApp:
                 image_pattern = f"match_Qm_pos00_vs_Template_Fringe_{tt_value}_{matching_method}.png"
                 image_path = os.path.join(storage_folder, image_pattern)
                 
+                logger.info(f"Looking for analysis image at: {image_path}")
+                
                 if os.path.exists(image_path):
                     # Load and display the image using matplotlib
                     img = plt.imread(image_path)
+                    self.analysis_figure.clear()
                     ax = self.analysis_figure.add_subplot(111)
                     ax.imshow(img)
                     ax.axis('off')  # Hide axes
+                    ax.set_xticks([])  # Remove x ticks
+                    ax.set_yticks([])  # Remove y ticks
                     self.analysis_canvas.draw()
                     self._log_message(f"Loaded analysis image: {image_path}")
                 else:
-                    self._log_message(f"Analysis image not found: {image_path}")
+                    self._log_message(f"Analysis image not found at path: {image_path}")
+                    # Try to find any matching files in the directory
+                    if os.path.exists(storage_folder):
+                        logger.error(f"Error trying to find {image_pattern} in {storage_folder}")
+                        logger.info(f"Contents of folder: {os.listdir(storage_folder)}")
+                        # Try to find similar files
+                        matching_files = [f for f in os.listdir(storage_folder) if 'match_Qm_pos00' in f]
+                        if matching_files:
+                            logger.info(f"Found similar files: {', '.join(matching_files)}")
+                            # Use the first matching file
+                            alt_image_path = os.path.join(storage_folder, matching_files[0])
+                            logger.info(f"Using alternative file: {alt_image_path}")
+                            if os.path.exists(alt_image_path):
+                                img = plt.imread(alt_image_path)
+                                self.analysis_figure.clear()
+                                ax = self.analysis_figure.add_subplot(111)
+                                ax.imshow(img)
+                                ax.axis('off')  # Hide axes
+                                ax.set_xticks([])  # Remove x ticks
+                                ax.set_yticks([])  # Remove y ticks
+                                self.analysis_canvas.draw()
+                                self._log_message(f"Loaded alternative analysis image: {alt_image_path}")
+                        else:
+                            self._log_message(f"No alternative images found in {storage_folder}")
 
             except Exception as img_error:
+                logger.error(f"Error loading analysis image: {img_error}", exc_info=True)
                 self._log_message(f"Error loading analysis image: {img_error}")
+                # Try to get more diagnostic info
+                self._log_message(f"Storage folder exists: {os.path.exists(storage_folder)}")
+                if os.path.exists(storage_folder):
+                    self._log_message(f"Contents of storage folder: {os.listdir(storage_folder)}")
 
             self._log_message(f"Analysis for tt: {tt_value} complete.")
             messagebox.showinfo("Analysis Complete", f"Analysis for tt: {tt_value} finished.")
@@ -439,6 +534,29 @@ class SplGuiApp:
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred during analysis: {e}")
             self._log_message(f"Analysis Error: {e}")
+
+    def update_reference_image(self, image, positions, n_rows, m_cols):
+        """Display the reference image in the GUI."""
+        self.ref_figure.clear()
+        ax = self.ref_figure.add_subplot(111)
+        ax.imshow(image, cmap='gray')
+        ax.axis('off')
+        # Plot spots and labels
+        for idx, (x, y) in enumerate(positions):
+            ax.plot(x, y, 'go', markersize=10)
+            ax.text(x+50, y+50, str(idx), color='white', bbox=dict(facecolor='red', alpha=0.7))
+        self.ref_canvas.draw()
+        # Ensure the frame is visible - Removed redundant pack call
+        # self.ref_image_frame.pack(padx=10, pady=10, fill='both', expand=True)
+
+    def hide_reference_image(self):
+        self.ref_image_frame.pack_forget()
+
+    def on_display_reference_toggle(self):
+        if self.display_reference_var.get():
+            self.ref_image_frame.pack(padx=10, pady=10, fill='both', expand=True)
+        else:
+            self.hide_reference_image()
 
 
 if __name__ == '__main__':

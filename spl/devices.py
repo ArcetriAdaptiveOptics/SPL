@@ -23,7 +23,7 @@ logic (e.g., data acquisition, GUI), promoting reusability and easier
 maintenance.
 """
 
-__author__ = "INAF Arcetri Adaptive Optics" # Or your specific name/team
+__author__ = "Marco Bonaglia & Gemini AI" # Or your specific name/team
 __version__ = "0.1.0" # Or align with your project versioning
 __date__ = "2025-05-16" # Or current date
 

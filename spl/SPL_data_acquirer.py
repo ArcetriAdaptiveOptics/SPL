@@ -49,12 +49,22 @@ class SplAcquirer():
         self._CAMERA_EXPTIME_MIN_MS = 0.001  # Minimum exposure time in ms (1 microsecond)
         self._CAMERA_EXPTIME_MAX_MS = 1000.0 # Maximum exposure time in ms (1,000,000 microseconds or 1 second)
 
-    def _load_flux_calibration(self):
-        """Loads flux calibration data from the FITS file specified in config."""
-        calib_filepath = config.FLUX_CALIBRATION_FILENAME
+    def _load_flux_calibration(self, custom_filename=None):
+        """Loads flux calibration data from the FITS file specified in config or custom filename.
+        
+        Args:
+            custom_filename (str, optional): Path to a custom flux calibration file. If provided,
+                                           this overrides the config file path.
+        """
+        calib_filepath = custom_filename if custom_filename is not None else config.FLUX_CALIBRATION_FILENAME
+        
         if not calib_filepath:
-            self._logger.info("Flux calibration file not specified in configuration. Proceeding without flux calibration.")
+            self._logger.info("No flux calibration file specified. Proceeding without flux calibration.")
             return None
+
+        # Convert relative path to absolute if needed
+        if not os.path.isabs(calib_filepath):
+            calib_filepath = os.path.join(os.path.dirname(config.__file__), calib_filepath)
 
         if not os.path.isfile(calib_filepath):
             self._logger.warning(f"Flux calibration file not found at '{calib_filepath}'. Proceeding without flux calibration.")
@@ -89,89 +99,6 @@ class SplAcquirer():
         """ Creates the path where to save measurement data"""
         measurement_path = config.MEASUREMENT_ROOT_FOLDER
         return measurement_path
-     
-    # def _populate_fits_header_from_snapshot(self, header, snapshot_dict, current_prefix):
-    #     """
-    #     Recursively populates a FITS header with key-value pairs from a snapshot dictionary,
-    #     using HIERARCH FITS convention for clarity.
-
-    #     Args:
-    #         header (pyfits.Header): The FITS header object to populate.
-    #         snapshot_dict (dict): The dictionary containing snapshot data.
-    #         current_prefix (str): The prefix string for the current level of keys (e.g., 'CAMSET', 'CAMSET STATUS').
-    #     """
-    #     if not isinstance(snapshot_dict, dict):
-    #         # self._logger.debug(f"Snapshot part for prefix '{current_prefix}' is not a dict, skipping: {snapshot_dict}")
-    #         return
-
-    #     for key, value in snapshot_dict.items():
-    #         # Construct a descriptive FITS keyword string using the prefix and current key
-    #         # Replace problematic characters for FITS keywords but aim for readability
-    #         # Spaces are okay as astropy will handle HIERARCH
-    #         clean_key_part = str(key).strip()
-    #         # Basic cleaning: replace multiple spaces with one, remove leading/trailing problematic chars for key parts
-    #         clean_key_part = re.sub(r'\s+', ' ', clean_key_part)
-    #         clean_key_part = re.sub(r'[^a-zA-Z0-9_.: -]', '', clean_key_part) # Allow a few more chars for HIERARCH
-
-    #         if not clean_key_part: # If key becomes empty after cleaning
-    #             # self._logger.warning(f"Skipping empty key generated from original key '{key}' under prefix '{current_prefix}'.")
-    #             continue
-
-    #         # Form the full keyword path, astropy handles HIERARCH for long ones / with spaces
-    #         fits_keyword_str = f"{current_prefix.upper()} {clean_key_part.upper()}"
-    #         # Limit total HIERARCH keyword string length (conventionally up to ~68-70 chars for keyword part)
-    #         fits_keyword_str = fits_keyword_str[:68].strip()
-
-    #         comment_str = f"Snapshot value for {current_prefix} {key}"[:68]
-
-    #         if isinstance(value, dict):
-    #             # If the value is another dictionary, recurse
-    #             self._populate_fits_header_from_snapshot(header, value, fits_keyword_str)
-    #         else:
-    #             # Process primitive values
-    #             processed_value = None
-    #             value_comment_suffix = ""
-
-    #             if value is None:
-    #                 processed_value = 'N/A' # FITS doesn't have None, use a placeholder string
-    #                 value_comment_suffix = " (was None)"
-    #             elif isinstance(value, bool):
-    #                 processed_value = value # astropy handles T/F
-    #             elif isinstance(value, (int, float, np.number)):
-    #                 if np.isnan(value) or np.isinf(value):
-    #                     processed_value = 'N/A'
-    #                     value_comment_suffix = " (was NaN/Inf)"
-    #                 else:
-    #                     processed_value = value
-    #             elif isinstance(value, str):
-    #                 # Ensure ASCII compliance and truncate
-    #                 # Make control characters visible and remove them, then encode to ASCII
-    #                 s = repr(value)[1:-1] # Get string content without quotes, e.g. '\r\n'
-    #                 s = s.replace('\\r', '').replace('\\n', '').replace('\\t', '') # Remove 
- 
-    #                 # Replace other common non-printable or problematic characters if necessary
-    #                 # For now, focus on what repr and encode handle.
-    #                 ascii_value = s.encode('ascii', 'replace').decode('ascii')
-    #                 processed_value = ascii_value[:68] # FITS string values also have length limits
-    #             else:
-    #                 try:
-    #                     str_val = str(value)
-    #                     ascii_value = str_val.encode('ascii', 'replace').decode('ascii')
-    #                     processed_value = ascii_value[:68]
-    #                     value_comment_suffix = f" (original type: {type(value).__name__})"
-    #                 except Exception as e_conv:
-    #                     self._logger.warning(f"Could not convert value for '{fits_keyword_str}' to string: {e_conv}. Skipping.")
-    #                     continue # Skip this key-value pair
-                
-    #             try:
-    #                 # Check if key already exists (e.g. from a previous, less specific add)
-    #                 # This simple check might not be sufficient for complex HIERARCH overlaps.
-    #                 if fits_keyword_str in header:
-    #                     # self._logger.debug(f"FITS keyword '{fits_keyword_str}' already exists. Overwriting.")
-    #                     pass # Allow overwrite, astropy handles it
-    #                 header[fits_keyword_str] = (processed_value, comment_str + value_comment_suffix)
-    #             except Exception as e:
-    #                 self._logger.warning(f"Could not add FITS entry for keyword '{fits_keyword_str}' (Original key: '{key}'): {e} (Value: {value}, Type: {type(value)})")
 
     def _set_camera_exposure_time(self, exptime_ms: float) -> float:
         """
@@ -213,7 +140,7 @@ class SplAcquirer():
                 return safe_exptime 
 
     def acquire(self, lambda_vector=None, exptime=None, numframes=None, mask=None, display_reference=False,
-                actuator_position=None): # Changed from actuator_snapshot to actuator_position
+                actuator_position=None, flux_calibration_filename=None):
         """
         Acquires images at different wavelengths, subtracts dark frame, 
         and saves them as FITS cubes.
@@ -225,6 +152,8 @@ class SplAcquirer():
             mask: Optional mask to apply
             display_reference: If True, displays the reference image after dark subtraction
             actuator_position (float, optional): Position of the actuator in nanometers.
+            flux_calibration_filename (str, optional): Path to a custom flux calibration file.
+                                                     If None, uses the config file or no calibration.
         """
         # Use configuration values if parameters are not provided
         if lambda_vector is None:
@@ -233,6 +162,9 @@ class SplAcquirer():
             exptime = config.EXPTIME
         if numframes is None:
             numframes = config.NUMFRAMES
+
+        # Load flux calibration data with custom filename if provided
+        self._flux_calibration_data = self._load_flux_calibration(flux_calibration_filename)
 
         # Now subtract the dark frame from subsequent frames during acquisition
         self._set_camera_exposure_time(exptime)
@@ -289,12 +221,22 @@ class SplAcquirer():
             
         self._logger.info(f"Total spot positions identified: {len(positions)}")
 
-        if display_reference or config.SHOW_REFERENCE_FRAME:
+        # Always display reference image if requested, regardless of config setting
+        if display_reference:
+            self._logger.info("Displaying reference image as requested...")
+            self._display_reference_image(reference_image, positions, self._n_rows, self._m_cols)
+        elif config.SHOW_REFERENCE_FRAME:
+            self._logger.info("Displaying reference image from config setting...")
             self._display_reference_image(reference_image, positions, self._n_rows, self._m_cols)
 
         # Step 3: Scan through wavelengths and preprocess data
         frame_cube = []
         for wl_idx, wl in enumerate(tqdm(lambda_vector, desc="Acquiring Wavelengths", unit="wvln")):
+            # Check if acquisition should be stopped
+            if hasattr(self, '_stop_acquisition') and self._stop_acquisition:
+                self._logger.info("Acquisition stopped by user request.")
+                break
+
             self._logger.info(f"Acquiring image at {wl} nm...")
             
             current_exptime = exptime # Base exptime for this wavelength
@@ -354,38 +296,49 @@ class SplAcquirer():
         self._logger.info("Acquisition complete.")
         return tt
 
-    def _display_reference_image(self, reference_image, spot_positions, n_rows_slice, n_cols_slice):
+    def _display_reference_image(self, reference_image, spot_positions, n_rows_slice, n_cols_slice, figure=None):
         """Displays the reference image with slice boundaries and spot IDs."""
         try:
-            plt.figure(figsize=(10, 8))
-            plt.imshow(reference_image, cmap='gray', origin='lower')
-            plt.colorbar(label='Intensity')
+            # Use provided figure or create new one
+            if figure is not None:
+                fig = figure
+                fig.clear()  # Clear existing content
+                ax = fig.add_subplot(111)
+            else:
+                fig = plt.figure(figsize=(10, 8))
+                ax = fig.add_subplot(111)
             
-            # --- Add Slice Boundary Visualization ---
+            # Display image
+            im = ax.imshow(reference_image, cmap='gray', origin='lower')
+            fig.colorbar(im, ax=ax, label='Intensity')
+            
+            # Add slice boundary visualization
             height, width = reference_image.shape
             row_size = height // n_rows_slice
             col_size = width // n_cols_slice
 
             # Draw horizontal lines
             for i in range(1, n_rows_slice):
-                plt.axhline(y=i * row_size, color='r', linestyle='--', alpha=0.7)
+                ax.axhline(y=i * row_size, color='r', linestyle='--', alpha=0.7)
             # Draw vertical lines
             for j in range(1, n_cols_slice):
-                plt.axvline(x=j * col_size, color='r', linestyle='--', alpha=0.7)
-            # --- End Slice Boundary Visualization ---
+                ax.axvline(x=j * col_size, color='r', linestyle='--', alpha=0.7)
 
-            # --- Add Spot Position IDs ---
+            # Add spot positions with IDs
             for idx, (x, y) in enumerate(spot_positions):
-                plt.text(x, y + 5, str(idx), color='yellow', fontsize=8, ha='center', va='bottom',
-                         bbox=dict(facecolor='black', alpha=0.3, pad=0.1, edgecolor='none'))
-            # --- End Spot Position IDs ---
+                ax.plot(x, y, 'go', markersize=10)  # Green circle
+                ax.text(x+5, y+5, str(idx), color='white', bbox=dict(facecolor='red', alpha=0.7))
 
-            plt.title(f'Reference Image (Dark Subtracted) with {n_rows_slice}x{n_cols_slice} Slice Boundaries & Spot IDs')
-            plt.xlabel("X pixel")
-            plt.ylabel("Y pixel")
-            plt.show()
+            ax.set_title("Reference Image with Detected Spots")
+            
+            # Don't call show() if figure was provided
+            if figure is None:
+                plt.show()
+            else:
+                figure.canvas.draw()
+
         except Exception as e:
-            self._logger.warning(f"Could not display reference image with slice boundaries and spot IDs: {e}")
+            self._logger.error(f"Error displaying reference image: {e}")
 
     def _sliceAndFindSpotPositions(self, image, n, m):
         """

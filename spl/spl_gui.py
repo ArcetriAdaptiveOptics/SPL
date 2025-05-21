@@ -42,6 +42,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import threading
+import glob
+import re
 
 # Actual script imports using relative paths
 from .SPL_data_acquirer import SplAcquirer
@@ -167,22 +169,33 @@ class SplGuiApp:
             command=self.on_display_reference_toggle
         ).grid(row=7, column=0, columnspan=2, padx=5, pady=5, sticky='w')
 
-        ttk.Label(frame, text="Actuator Position (nm, optional):").grid(row=8, column=0, padx=5, pady=2, sticky='w')
+        ttk.Label(frame, text="Actuator Positions (nm, optional):").grid(row=8, column=0, padx=5, pady=2, sticky='w')
         self.actuator_pos_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.actuator_pos_var, width=10).grid(row=8, column=1, padx=5, pady=2, sticky='ew')
+        ttk.Entry(frame, textvariable=self.actuator_pos_var, width=40).grid(row=8, column=1, padx=5, pady=2, sticky='ew')
+        ttk.Label(frame, text=" (Comma-separated values)").grid(row=8, column=2, padx=5, pady=2, sticky='w')
         
         frame.columnconfigure(1, weight=1)
 
-        # Create a frame for the buttons
-        button_frame = ttk.Frame(self.tab_acquirer)
-        button_frame.pack(pady=10)
+        # Create a frame for the buttons and progress bar
+        control_frame = ttk.Frame(self.tab_acquirer)
+        control_frame.pack(pady=10, fill='x')
 
         # Add Run and Stop buttons side by side
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(pady=(0, 10))
         self.run_button = ttk.Button(button_frame, text="Run Acquisition", command=self.run_acquisition)
         self.run_button.pack(side=tk.LEFT, padx=5)
-
         self.stop_button = ttk.Button(button_frame, text="Stop Acquisition", command=self.stop_acquisition, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=5)
+
+        # Add progress bar
+        self.progress_frame = ttk.Frame(control_frame)
+        self.progress_frame.pack(fill='x', padx=10)
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(self.progress_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill='x', expand=True)
+        self.progress_label = ttk.Label(self.progress_frame, text="")
+        self.progress_label.pack()
 
         ttk.Label(self.tab_acquirer, text="Tracking Number (tt):").pack(pady=(10,0))
         ttk.Entry(self.tab_acquirer, textvariable=self.tt_var, width=50, state='readonly').pack()
@@ -226,6 +239,13 @@ class SplGuiApp:
             self.acquisition_running = False
             self.run_button.config(state=tk.NORMAL)
             self.stop_button.config(state=tk.DISABLED)
+
+    def update_progress(self, current, total, wavelength):
+        """Update the progress bar and label."""
+        progress = (current / total) * 100
+        self.progress_var.set(progress)
+        self.progress_label.config(text=f"Processing wavelength {wavelength} nm ({current}/{total})")
+        self.master.update_idletasks()
 
     def run_acquisition(self):
         self._log_message("Starting acquisition...")
@@ -281,8 +301,16 @@ class SplGuiApp:
             
             flux_calib_path = self.flux_calib_var.get()
             
+            # Parse actuator positions
             actuator_pos_str = self.actuator_pos_var.get()
-            actuator_position = float(actuator_pos_str) if actuator_pos_str else None
+            actuator_positions = None
+            if actuator_pos_str:
+                try:
+                    actuator_positions = [float(pos.strip()) for pos in actuator_pos_str.split(',')]
+                    self._log_message(f"Using actuator positions: {actuator_positions}")
+                except ValueError:
+                    messagebox.showerror("Error", "Invalid actuator positions. Must be comma-separated numbers.")
+                    return
 
             # Local variables for use in the thread
             master = self.master
@@ -291,6 +319,7 @@ class SplGuiApp:
             tt_var = self.tt_var
             log_message = self._log_message
             update_reference_image = self.update_reference_image if display_reference else None
+            update_progress = self.update_progress
 
             # Define the acquisition function to run in a separate thread
             def acquisition_thread():
@@ -302,9 +331,10 @@ class SplGuiApp:
                         numframes=numframes,
                         mask=mask,
                         display_reference=display_reference,
-                        actuator_position=actuator_position,
+                        actuator_positions=actuator_positions,
                         flux_calibration_filename=flux_calib_path if flux_calib_path else None,
-                        reference_image_callback=update_reference_image
+                        reference_image_callback=update_reference_image,
+                        progress_callback=update_progress
                     )
 
                     # Update GUI after acquisition is complete (in main thread)
@@ -328,6 +358,9 @@ class SplGuiApp:
                     master.after(0, lambda: self.run_button.config(state=tk.NORMAL))
                     master.after(0, lambda: self.stop_button.config(state=tk.DISABLED))
                     master.after(0, lambda: setattr(acquirer, '_stop_acquisition', False) if hasattr(acquirer, '_stop_acquisition') else None)
+                    # Reset progress bar
+                    master.after(0, lambda: self.progress_var.set(0))
+                    master.after(0, lambda: self.progress_label.config(text=""))
 
             # Start the acquisition thread
             threading.Thread(target=acquisition_thread).start()
@@ -357,12 +390,99 @@ class SplGuiApp:
 
         self.debug_contours_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(frame, text="Debug Contours", 
-                       variable=self.debug_contours_var).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='w')
+                       variable=self.debug_contours_var,
+                       command=self.on_debug_contours_toggle).grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky='w')
         
         frame.columnconfigure(1, weight=1)
 
-        run_button = ttk.Button(self.tab_processor, text="Run Processing", command=self.run_processing)
-        run_button.pack(pady=10)
+        # Create a frame for the button and progress bar
+        control_frame = ttk.Frame(self.tab_processor)
+        control_frame.pack(pady=10, fill='x')
+
+        # Add Run button
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(pady=(0, 10))
+        run_button = ttk.Button(button_frame, text="Run Processing", command=self.run_processing)
+        run_button.pack()
+
+        # Add progress bar
+        self.processor_progress_frame = ttk.Frame(control_frame)
+        self.processor_progress_frame.pack(fill='x', padx=10)
+        self.processor_progress_var = tk.DoubleVar()
+        self.processor_progress_bar = ttk.Progressbar(self.processor_progress_frame, variable=self.processor_progress_var, maximum=100)
+        self.processor_progress_bar.pack(fill='x', expand=True)
+        self.processor_progress_label = ttk.Label(self.processor_progress_frame, text="")
+        self.processor_progress_label.pack()
+
+        # Create frame for debug images
+        self.debug_images_frame = ttk.LabelFrame(self.tab_processor, text="Debug Images (600nm)")
+        self.debug_images_frame.pack(padx=10, pady=10, fill='both', expand=True)
+        
+        # Create matplotlib figure and canvas for debug images
+        self.debug_figure = Figure(figsize=(10, 8), dpi=100)
+        self.debug_canvas = FigureCanvasTkAgg(self.debug_figure, master=self.debug_images_frame)
+        self.debug_canvas.get_tk_widget().pack(side=tk.TOP, fill='both', expand=True)
+        
+        # Add toolbar for navigation
+        from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+        toolbar = NavigationToolbar2Tk(self.debug_canvas, self.debug_images_frame)
+        toolbar.update()
+
+        # Initially hide the debug images frame
+        self.debug_images_frame.pack_forget()
+
+    def on_debug_contours_toggle(self):
+        """Handle debug contours checkbox toggle."""
+        if self.debug_contours_var.get():
+            self.debug_images_frame.pack(padx=10, pady=10, fill='both', expand=True)
+            # If we have a tt value, try to load the debug images
+            tt_value = self.tt_var.get()
+            if tt_value:
+                self.load_debug_images(tt_value)
+        else:
+            self.debug_images_frame.pack_forget()
+
+    def load_debug_images(self, tt_value):
+        """Load and display debug images for 600nm wavelength."""
+        try:
+            # Get the storage folder
+            storage_folder = os.path.join(config.MEASUREMENT_ROOT_FOLDER, tt_value)
+            
+            # Find all 600nm debug images
+            debug_pattern = os.path.join(storage_folder, "image_600nm_pos*_proc_debug.png")
+            debug_files = sorted(glob.glob(debug_pattern))
+            
+            if not debug_files:
+                self._log_message("No debug images found for 600nm wavelength.")
+                return
+
+            # Calculate grid dimensions
+            n_images = len(debug_files)
+            n_cols = min(3, n_images)  # Max 3 columns
+            n_rows = (n_images + n_cols - 1) // n_cols
+
+            # Clear the figure
+            self.debug_figure.clear()
+
+            # Load and display each image
+            for idx, file_path in enumerate(debug_files):
+                ax = self.debug_figure.add_subplot(n_rows, n_cols, idx + 1)
+                img = plt.imread(file_path)
+                ax.imshow(img)
+                ax.axis('off')
+                # Extract position number from filename
+                pos_match = re.search(r'pos(\d+)', os.path.basename(file_path))
+                if pos_match:
+                    pos_num = pos_match.group(1)
+                    ax.set_title(f"Position {pos_num}")
+
+            self.debug_figure.tight_layout()
+            self.debug_canvas.draw()
+            self._log_message(f"Loaded {len(debug_files)} debug images for 600nm wavelength.")
+
+        except Exception as e:
+            self._log_message(f"Error loading debug images: {e}")
+            logger.error(f"Error loading debug images: {e}", exc_info=True)
 
     def run_processing(self):
         tt_value = self.tt_var.get()
@@ -374,20 +494,32 @@ class SplGuiApp:
         self._log_message(f"Starting processing for tt: {tt_value}, Debug Contours: {debug_contours}")
 
         try:
+            # Reset progress bar
+            self.processor_progress_var.set(0)
+            self.processor_progress_label.config(text="Starting processing...")
+
             # --- INTEGRATE YOUR SplProcessor LOGIC HERE ---
             processor = SplProcessor()
             processor.process(tt=tt_value, debug_contours=debug_contours)
+            
+            # Update progress to 100% when complete
+            self.processor_progress_var.set(100)
+            self.processor_progress_label.config(text="Processing complete")
+            
             self._log_message(f"Processing for tt: {tt_value} complete.")
             messagebox.showinfo("Processing Complete", f"Processing for tt: {tt_value} finished.")
-            # --- End Integration ---
-
-            # Placeholder (REMOVE AFTER INTEGRATION)
-            # self._log_message(f"Placeholder: Processing for tt: {tt_value} would run here.")
-            # messagebox.showinfo("Processing", f"Processing for tt: {tt_value} placeholder complete.")
+            
+            # If debug contours is enabled, load the debug images
+            if debug_contours:
+                self.load_debug_images(tt_value)
 
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred during processing: {e}")
             self._log_message(f"Processing Error: {e}")
+        finally:
+            # Reset progress bar after a delay
+            self.master.after(2000, lambda: self.processor_progress_var.set(0))
+            self.master.after(2000, lambda: self.processor_progress_label.config(text=""))
 
     def _create_analyzer_widgets(self):
         # Parameters frame
@@ -415,8 +547,24 @@ class SplGuiApp:
         
         frame.columnconfigure(1, weight=1)
 
-        run_button = ttk.Button(self.tab_analyzer, text="Run Analysis", command=self.run_analysis)
-        run_button.pack(pady=10)
+        # Create a frame for the button and progress bar
+        control_frame = ttk.Frame(self.tab_analyzer)
+        control_frame.pack(pady=10, fill='x')
+
+        # Add Run button
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(pady=(0, 10))
+        run_button = ttk.Button(button_frame, text="Run Analysis", command=self.run_analysis)
+        run_button.pack()
+
+        # Add progress bar
+        self.analysis_progress_frame = ttk.Frame(control_frame)
+        self.analysis_progress_frame.pack(fill='x', padx=10)
+        self.analysis_progress_var = tk.DoubleVar()
+        self.analysis_progress_bar = ttk.Progressbar(self.analysis_progress_frame, variable=self.analysis_progress_var, maximum=100)
+        self.analysis_progress_bar.pack(fill='x', expand=True)
+        self.analysis_progress_label = ttk.Label(self.analysis_progress_frame, text="")
+        self.analysis_progress_label.pack()
 
         # Results frame
         results_frame = ttk.LabelFrame(self.tab_analyzer, text="Analysis Results")
@@ -427,19 +575,26 @@ class SplGuiApp:
         self.piston_text = tk.Text(results_frame, height=4, width=50)
         self.piston_text.pack(padx=5, pady=2, fill='x')
 
-        # Image display
-        self.analysis_image_frame = ttk.LabelFrame(results_frame, text="Analysis Image")
-        self.analysis_image_frame.pack(padx=5, pady=5, fill='both', expand=True)
+        # Create a frame for the fringe images
+        self.fringes_frame = ttk.LabelFrame(results_frame, text="Fringe Images")
+        self.fringes_frame.pack(padx=5, pady=5, fill='both', expand=True)
         
-        # Create matplotlib figure and canvas for analysis image display
-        self.analysis_figure = Figure(figsize=(6, 4), dpi=100)
-        self.analysis_canvas = FigureCanvasTkAgg(self.analysis_figure, master=self.analysis_image_frame)
-        self.analysis_canvas.get_tk_widget().pack(side=tk.TOP, fill='both', expand=True)
+        # Create matplotlib figure and canvas for fringe images
+        self.fringes_figure = Figure(figsize=(10, 8), dpi=100)
+        self.fringes_canvas = FigureCanvasTkAgg(self.fringes_figure, master=self.fringes_frame)
+        self.fringes_canvas.get_tk_widget().pack(side=tk.TOP, fill='both', expand=True)
         
         # Add toolbar for navigation
         from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
-        toolbar = NavigationToolbar2Tk(self.analysis_canvas, self.analysis_image_frame)
+        toolbar = NavigationToolbar2Tk(self.fringes_canvas, self.fringes_frame)
         toolbar.update()
+
+    def update_analysis_progress(self, current, total, position):
+        """Update the analysis progress bar and label."""
+        progress = (current / total) * 100
+        self.analysis_progress_var.set(progress)
+        self.analysis_progress_label.config(text=f"Processing position {position} ({current}/{total})")
+        self.master.update_idletasks()
 
     def run_analysis(self):
         tt_value = self.tt_var.get()
@@ -455,78 +610,78 @@ class SplGuiApp:
         try:
             # Clear previous results
             self.piston_text.delete('1.0', tk.END)
-            self.analysis_figure.clear()
+            self.fringes_figure.clear()
 
-            # Run analysis
-            analyzer = SplAnalyzer()
-            results = analyzer.analyzer(
-                tt=tt_value,
-                use_processed=use_processed,
-                matching_method=matching_method
-            )
+            # Get the storage folder
+            storage_folder = os.path.join(config.MEASUREMENT_ROOT_FOLDER, tt_value)
+            
+            # Find all position numbers from the filenames
+            position_pattern = re.compile(r'pos(\d+)')
+            positions = set()
+            for filename in os.listdir(storage_folder):
+                match = position_pattern.search(filename)
+                if match:
+                    positions.add(int(match.group(1)))
+            positions = sorted(list(positions))
+            
+            if not positions:
+                self._log_message("No position data found in the storage folder.")
+                return
 
-            # Display piston values in text widget
-            if isinstance(results, dict):
-                for pos, value in results.items():
-                    self.piston_text.insert(tk.END, f"Position {pos}: {value}\n")
-            else:
-                self.piston_text.insert(tk.END, str(results))
-
-            # Try to load and display analysis image
-            try:
-                # Get the storage folder from config (same as in SPL_data_analyzer.py)
-                storage_folder = os.path.join(config.MEASUREMENT_ROOT_FOLDER, tt_value)
+            # Run analysis for each position
+            results = {}
+            total_positions = len(positions)
+            
+            for idx, position in enumerate(positions):
+                # Update progress
+                self.update_analysis_progress(idx + 1, total_positions, position)
                 
-                # Look for the matching image
-                image_pattern = f"match_Qm_pos00_vs_Template_Fringe_{tt_value}_{matching_method}.png"
-                image_path = os.path.join(storage_folder, image_pattern)
-                
-                logger.info(f"Looking for analysis image at: {image_path}")
-                
-                if os.path.exists(image_path):
-                    # Load and display the image using matplotlib
-                    img = plt.imread(image_path)
-                    self.analysis_figure.clear()
-                    ax = self.analysis_figure.add_subplot(111)
-                    ax.imshow(img)
-                    ax.axis('off')  # Hide axes
-                    ax.set_xticks([])  # Remove x ticks
-                    ax.set_yticks([])  # Remove y ticks
-                    self.analysis_canvas.draw()
-                    self._log_message(f"Loaded analysis image: {image_path}")
-                else:
-                    self._log_message(f"Analysis image not found at path: {image_path}")
-                    # Try to find any matching files in the directory
-                    if os.path.exists(storage_folder):
-                        logger.error(f"Error trying to find {image_pattern} in {storage_folder}")
-                        logger.info(f"Contents of folder: {os.listdir(storage_folder)}")
-                        # Try to find similar files
-                        matching_files = [f for f in os.listdir(storage_folder) if 'match_Qm_pos00' in f]
-                        if matching_files:
-                            logger.info(f"Found similar files: {', '.join(matching_files)}")
-                            # Use the first matching file
-                            alt_image_path = os.path.join(storage_folder, matching_files[0])
-                            logger.info(f"Using alternative file: {alt_image_path}")
-                            if os.path.exists(alt_image_path):
-                                img = plt.imread(alt_image_path)
-                                self.analysis_figure.clear()
-                                ax = self.analysis_figure.add_subplot(111)
-                                ax.imshow(img)
-                                ax.axis('off')  # Hide axes
-                                ax.set_xticks([])  # Remove x ticks
-                                ax.set_yticks([])  # Remove y ticks
-                                self.analysis_canvas.draw()
-                                self._log_message(f"Loaded alternative analysis image: {alt_image_path}")
-                        else:
-                            self._log_message(f"No alternative images found in {storage_folder}")
+                # Run analysis for this position
+                analyzer = SplAnalyzer()
+                position_result = analyzer.analyzer(
+                    tt=tt_value,
+                    use_processed=use_processed,
+                    matching_method=matching_method,
+                    position=position
+                )
+                results[position] = position_result
 
-            except Exception as img_error:
-                logger.error(f"Error loading analysis image: {img_error}", exc_info=True)
-                self._log_message(f"Error loading analysis image: {img_error}")
-                # Try to get more diagnostic info
-                self._log_message(f"Storage folder exists: {os.path.exists(storage_folder)}")
-                if os.path.exists(storage_folder):
-                    self._log_message(f"Contents of storage folder: {os.listdir(storage_folder)}")
+                # Display piston values in text widget
+                self.piston_text.insert(tk.END, f"Position {position:02d}: {position_result}\n")
+
+                # Try to load and display fringe image for this position
+                try:
+                    # Look for match images with the correct pattern
+                    match_pattern = f"match_Qm_pos{position:02d}_vs_Template_Fringe_*_{matching_method}.png"
+                    match_files = glob.glob(os.path.join(storage_folder, match_pattern))
+                    
+                    if match_files:
+                        # Sort files to get the most recent one if multiple exist
+                        match_files.sort(reverse=True)
+                        image_path = match_files[0]
+                        
+                        # Calculate grid dimensions with max 3 rows per column
+                        max_rows_per_column = 3
+                        n_columns = (total_positions + max_rows_per_column - 1) // max_rows_per_column
+                        current_column = idx // max_rows_per_column
+                        current_row = idx % max_rows_per_column
+                        
+                        # Add subplot for this position
+                        ax = self.fringes_figure.add_subplot(max_rows_per_column, n_columns, 
+                                                           current_row * n_columns + current_column + 1)
+                        img = plt.imread(image_path)
+                        ax.imshow(img)
+                        ax.axis('off')
+                        ax.set_title(f"Position {position:02d}")
+                        self._log_message(f"Loaded match image: {os.path.basename(image_path)}")
+                    else:
+                        self._log_message(f"No match image found for position {position:02d}")
+                except Exception as img_error:
+                    self._log_message(f"Error loading match image for position {position:02d}: {img_error}")
+
+            # Adjust layout and draw
+            self.fringes_figure.tight_layout()
+            self.fringes_canvas.draw()
 
             self._log_message(f"Analysis for tt: {tt_value} complete.")
             messagebox.showinfo("Analysis Complete", f"Analysis for tt: {tt_value} finished.")
@@ -534,6 +689,10 @@ class SplGuiApp:
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred during analysis: {e}")
             self._log_message(f"Analysis Error: {e}")
+        finally:
+            # Reset progress bar
+            self.analysis_progress_var.set(0)
+            self.analysis_progress_label.config(text="")
 
     def update_reference_image(self, image, positions, n_rows, m_cols):
         """Display the reference image in the GUI."""

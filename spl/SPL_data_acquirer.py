@@ -140,7 +140,8 @@ class SplAcquirer():
                 return safe_exptime 
 
     def acquire(self, lambda_vector=None, exptime=None, numframes=None, mask=None, display_reference=False,
-                actuator_position=None, flux_calibration_filename=None, reference_image_callback=None):
+                actuator_positions=None, flux_calibration_filename=None, reference_image_callback=None,
+                progress_callback=None):
         """
         Acquires images at different wavelengths, subtracts dark frame, 
         and saves them as FITS cubes.
@@ -151,11 +152,16 @@ class SplAcquirer():
             numframes: Number of frames to average. If None, uses config value
             mask: Optional mask to apply
             display_reference: If True, displays the reference image after dark subtraction
-            actuator_position (float, optional): Position of the actuator in nanometers.
+            actuator_positions (list or float, optional): List of actuator positions in nanometers or single position.
             flux_calibration_filename (str, optional): Path to a custom flux calibration file.
                                                      If None, uses the config file or no calibration.
             reference_image_callback (callable, optional): Callback function to display reference image in GUI
+            progress_callback (callable, optional): Callback function to update progress (wavelength, total)
         """
+        # Convert single actuator position to list if needed
+        if actuator_positions is not None and not isinstance(actuator_positions, (list, tuple, np.ndarray)):
+            actuator_positions = [actuator_positions]
+
         # Use configuration values if parameters are not provided
         if lambda_vector is None:
             lambda_vector = np.arange(config.LAMBDAMIN, config.LAMBDAMAX + 1, config.LAMBDASTEP)
@@ -236,11 +242,17 @@ class SplAcquirer():
 
         # Step 3: Scan through wavelengths and preprocess data
         frame_cube = []
-        for wl_idx, wl in enumerate(tqdm(lambda_vector, desc="Acquiring Wavelengths", unit="wvln")):
+        total_wavelengths = len(lambda_vector)
+        
+        for wl_idx, wl in enumerate(lambda_vector):
             # Check if acquisition should be stopped
             if hasattr(self, '_stop_acquisition') and self._stop_acquisition:
                 self._logger.info("Acquisition stopped by user request.")
                 break
+
+            # Update progress if callback provided
+            if progress_callback:
+                progress_callback(wl_idx + 1, total_wavelengths, wl)
 
             self._logger.info(f"Acquiring image at {wl} nm...")
             
@@ -291,8 +303,10 @@ class SplAcquirer():
                 cx, cy = pos
                 crop = self._preProcessing(image, cy, cx)
                 file_name = 'image_%dnm_pos%02d.fits' % (wl, idx)
+                # Use the corresponding actuator position if available
+                current_actuator_pos = actuator_positions[idx] if actuator_positions and idx < len(actuator_positions) else None
                 self._saveCameraFrame(file_name, crop, wavelength=wl, exptime_ms=actual_exptime,
-                                      actuator_position=actuator_position) # Pass actuator_position
+                                      actuator_position=current_actuator_pos)
                 processed_wavelength_frames.append(crop)
             
             frame_cube.append(processed_wavelength_frames)

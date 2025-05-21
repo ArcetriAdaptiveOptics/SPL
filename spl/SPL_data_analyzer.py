@@ -61,7 +61,7 @@ class SplAnalyzer():
         fringes_path = os.path.join(os.path.dirname(__file__), 'Fringes')
         return fringes_path
     
-    def analyzer(self, tt, use_processed=False, matching_method='original'):
+    def analyzer(self, tt, use_processed=False, matching_method='original', position=None):
         '''
         Analyze measurement data and compare it with synthetic data.
 
@@ -74,6 +74,8 @@ class SplAnalyzer():
         matching_method: str, optional
             Method for template comparison ('original', 'cross_correlation').
             Defaults to 'original'.
+        position: int, optional
+            Specific position to analyze. If None, analyzes all positions.
         Returns
         -------
         pistons: list of tuples
@@ -89,8 +91,13 @@ class SplAnalyzer():
 
         # Extract wavelengths and positions
         wavelengths, positions = self.parseFitsFilenames(dove)
-        #print(wavelengths)
-        #print(positions)
+        
+        # If a specific position is requested, filter positions list
+        if position is not None:
+            if position not in positions:
+                self._logger.error(f"Requested position {position} not found in available positions: {positions}")
+                return [(np.nan, np.nan)]
+            positions = [position]
 
         pistons = []
         
@@ -106,7 +113,6 @@ class SplAnalyzer():
             matrix, matrix_smooth = self.matrix_calc(lambda_vector, cube, cube_normalized)
 
             # Compare with synthetic data to get piston and piston_smooth
-            #print('*** Position = ', position)
             piston, piston_smooth = self._templateComparison(matrix, matrix_smooth, lambda_vector, tt, position, matching_method)
 
             # Save the piston result

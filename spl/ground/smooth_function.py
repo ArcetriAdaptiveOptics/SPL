@@ -13,7 +13,7 @@ import numpy as np
 
 
 def smooth(a, WSZ):
-    ''''
+    ''''Performs moving average smoothing on a 1-D array.
 
     Parameters
     ----------
@@ -26,10 +26,16 @@ def smooth(a, WSZ):
     Returns
     -------
     smooth: numpy array
-            smoothd data
+            smoothed data, same size as input array 'a'
     '''
-    out0 = np.convolve(a, np.ones(WSZ, dtype=int), 'valid')/WSZ
-    r = np.arange(1, WSZ-1, 2)
-    start = np.cumsum(a[:WSZ-1])[::2]/r
-    stop = (np.cumsum(a[:-WSZ:-1])[::2]/r)[::-1]
-    return np.concatenate((start, out0, stop))
+    # Check if window size is odd, as per original docstring
+    if WSZ % 2 == 0:
+        print(f"Warning: Smoothing window size WSZ={WSZ} should ideally be odd.")
+        # Proceeding anyway, but np.convolve handles even sizes.
+        
+    # Use convolution with mode='same' to ensure output size matches input size.
+    # The kernel is an array of ones divided by the window size for averaging.
+    kernel = np.ones(WSZ) / WSZ
+    smoothed_a = np.convolve(a, kernel, mode='same')
+    
+    return smoothed_a

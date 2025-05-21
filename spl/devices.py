@@ -109,25 +109,42 @@ def initialize_hardware():
 
 def shutdown_hardware():
     """
-    Placeholder for any necessary hardware shutdown/cleanup.
-    For plico clients, this might involve specific disconnection methods.
-    Pysilico and plico_motor clients might not require explicit shutdown,
-    or might be handled by their destructors or context managers if used.
+    Properly shutdown and cleanup hardware connections.
+    Attempts to disconnect from both filter and camera clients.
     """
     global _filter_client, _camera_client
-    logger.info("Shutting down hardware (clearing cached clients)...")
+    logger.info("Shutting down hardware...")
     
-    # Example of explicit disconnect if the clients have such a method:
-    # try:
-    #     if _filter_client and hasattr(_filter_client, 'disconnect'):
-    #         logger.info("Disconnecting filter client...")
-    #         _filter_client.disconnect()
-    #     if _camera_client and hasattr(_camera_client, 'disconnect'):
-    #         logger.info("Disconnecting camera client...")
-    #         _camera_client.disconnect()
-    # except Exception as e:
-    #     logger.error(f"Error during explicit hardware disconnect: {e}")
+    try:
+        if _filter_client:
+            logger.info("Disconnecting filter client...")
+            try:
+                # Try to stop any ongoing operations
+                if hasattr(_filter_client, 'stop'):
+                    _filter_client.stop()
+                # Try to disconnect if method exists
+                if hasattr(_filter_client, 'disconnect'):
+                    _filter_client.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting filter client: {e}")
+            finally:
+                _filter_client = None
 
-    _filter_client = None
-    _camera_client = None
-    logger.info("Hardware client cache cleared.") 
+        if _camera_client:
+            logger.info("Disconnecting camera client...")
+            try:
+                # Try to stop any ongoing operations
+                if hasattr(_camera_client, 'stop'):
+                    _camera_client.stop()
+                # Try to disconnect if method exists
+                if hasattr(_camera_client, 'disconnect'):
+                    _camera_client.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting camera client: {e}")
+            finally:
+                _camera_client = None
+
+    except Exception as e:
+        logger.error(f"Error during hardware shutdown: {e}")
+    finally:
+        logger.info("Hardware shutdown complete.") 

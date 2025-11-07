@@ -28,6 +28,8 @@ ENABLE_SPL_LOGGING = config.getboolean('spl', 'enable_spl_logging', fallback=Tru
 
 # New configuration parameters
 POSITIONS_TO_ROTATION_ANGLES = config.get('spl', 'positions_to_rotation_angles', fallback=None)
+# New parameter for vertical alignment
+POSITIONS_TO_ROTATION_ANGLES_VERTICAL = config.get('spl', 'positions_to_rotation_angles_vertical', fallback=None)
 #FRINGES_HEIGHT = int(config['spl']['fringes_height'])
 DARK_FILENAME = config.get('spl', 'dark_filename', fallback=None)
 SPOT_FIND_THRESHOLD = config.get('spl', 'spot_find_threshold', fallback=None)

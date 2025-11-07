@@ -28,7 +28,7 @@ class SplProcessor():
     def __init__(self):
         """The constructor """
         self._logger = logging.getLogger('SPL_PROC:')
-        self._crop_size = 150 #configuration.FRINGES_HEIGHT  # Use configuration value
+        self._crop_size = configuration.CROP_HEIGHT  # Use configuration value
 
     @staticmethod
     def _storageFolder():
@@ -68,8 +68,10 @@ class SplProcessor():
         debug_contours: bool
             If True, save debug PNGs showing contours used for mean image centroid.
         '''
-        # Parse rotation angles from configuration
-        config_rotation_angles = self._parse_rotation_angles_from_config(configuration.POSITIONS_TO_ROTATION_ANGLES)
+        # Parse rotation angles from configuration (use vertical alignment parameter if available, otherwise fallback to old parameter)
+        config_rotation_angles = self._parse_rotation_angles_from_config(
+            configuration.POSITIONS_TO_ROTATION_ANGLES_VERTICAL or configuration.POSITIONS_TO_ROTATION_ANGLES
+        )
         
         dove = os.path.join(self._storageFolder(), tt)
             

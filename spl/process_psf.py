@@ -146,7 +146,16 @@ def rotate_around_centroid(image: np.ndarray, angle: float, centroid: Tuple[floa
     final_img_padded = shift(rotated_img, shift=-effective_shift, order=order, mode='constant', cval=cval)
     
     # 4. Crop back to the original image size
-    final_img = final_img_padded[max_shift[0]:-max_shift[0], max_shift[1]:-max_shift[1]]
+    # Handle edge case where max_shift is 0 (centroid already at center)
+    if max_shift[0] > 0 and max_shift[1] > 0:
+        final_img = final_img_padded[max_shift[0]:-max_shift[0], max_shift[1]:-max_shift[1]]
+    elif max_shift[0] > 0:
+        final_img = final_img_padded[max_shift[0]:-max_shift[0], :]
+    elif max_shift[1] > 0:
+        final_img = final_img_padded[:, max_shift[1]:-max_shift[1]]
+    else:
+        # No padding was needed, image is already correct size
+        final_img = final_img_padded
     
     return final_img
 
